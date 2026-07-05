@@ -16,6 +16,19 @@ const GEMINI_API_KEY    = import.meta.env.VITE_GEMINI_API_KEY;
 const BACKEND_URL       = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
 
 // ── Supabase helper ──────────────────────────────────────────
+// ── Helper: Ambil user_id dari JWT token (payload tengah base64) ──
+// Supabase TIDAK otomatis mengisi user_id saat insert lewat REST API;
+// harus dikirim manual, kalau tidak RLS akan menolak (return kosong tanpa error).
+function getUserIdFromToken(token) {
+  try {
+    const payload = token.split(".")[1];
+    const decoded = JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/")));
+    return decoded.sub; // "sub" adalah user_id di Supabase JWT
+  } catch {
+    return null;
+  }
+}
+
 const sb = {
   h: (token) => ({
     "Content-Type": "application/json",
@@ -37,8 +50,10 @@ const sb = {
     return r.ok ? r.json() : [];
   },
   async insert(t, d) {
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/transaksi`, { method: "POST", headers: this.h(t), body: JSON.stringify(d) });
-    return r.ok ? r.json() : null;
+    const payload = { ...d, user_id: getUserIdFromToken(t) };
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/transaksi`, { method: "POST", headers: this.h(t), body: JSON.stringify(payload) });
+    if (!r.ok) { console.error("Insert transaksi gagal:", await r.text()); return null; }
+    return r.json();
   },
   async update(t, id, d) {
     const r = await fetch(`${SUPABASE_URL}/rest/v1/transaksi?id=eq.${id}`, { method: "PATCH", headers: this.h(t), body: JSON.stringify(d) });
@@ -52,12 +67,14 @@ const sb = {
     return r.ok ? r.json() : [];
   },
   async upsertBudget(t, d) {
+    const payload = { ...d, user_id: getUserIdFromToken(t) };
     const r = await fetch(`${SUPABASE_URL}/rest/v1/budget?on_conflict=user_id,kategori,bulan,tahun`, {
       method: "POST",
       headers: { ...this.h(t), Prefer: "resolution=merge-duplicates,return=representation" },
-      body: JSON.stringify(d),
+      body: JSON.stringify(payload),
     });
-    return r.ok ? r.json() : null;
+    if (!r.ok) { console.error("Upsert budget gagal:", await r.text()); return null; }
+    return r.json();
   },
   async removeBudget(t, id) { await fetch(`${SUPABASE_URL}/rest/v1/budget?id=eq.${id}`, { method: "DELETE", headers: this.h(t) }); },
 
@@ -67,10 +84,12 @@ const sb = {
     return r.ok ? r.json() : [];
   },
   async insertDompet(t, d) {
+    const payload = { ...d, user_id: getUserIdFromToken(t) };
     const r = await fetch(`${SUPABASE_URL}/rest/v1/dompet`, {
-      method: "POST", headers: this.h(t), body: JSON.stringify(d),
+      method: "POST", headers: this.h(t), body: JSON.stringify(payload),
     });
-    return r.ok ? r.json() : null;
+    if (!r.ok) { console.error("Insert dompet gagal:", await r.text()); return null; }
+    return r.json();
   },
   async updateDompet(t, id, d) {
     const r = await fetch(`${SUPABASE_URL}/rest/v1/dompet?id=eq.${id}`, {
