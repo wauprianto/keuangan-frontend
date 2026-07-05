@@ -50,14 +50,17 @@ const sb = {
     return r.ok ? r.json() : [];
   },
   async insert(t, d) {
-    const payload = { ...d, user_id: getUserIdFromToken(t) };
+    // Kolom UUID (dompet_id) menolak string kosong "" — harus null kalau tidak dipilih
+    const payload = { ...d, user_id: getUserIdFromToken(t), dompet_id: d.dompet_id || null };
     const r = await fetch(`${SUPABASE_URL}/rest/v1/transaksi`, { method: "POST", headers: this.h(t), body: JSON.stringify(payload) });
     if (!r.ok) { console.error("Insert transaksi gagal:", await r.text()); return null; }
     return r.json();
   },
   async update(t, id, d) {
-    const r = await fetch(`${SUPABASE_URL}/rest/v1/transaksi?id=eq.${id}`, { method: "PATCH", headers: this.h(t), body: JSON.stringify(d) });
-    return r.ok ? r.json() : null;
+    const payload = { ...d, dompet_id: d.dompet_id || null };
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/transaksi?id=eq.${id}`, { method: "PATCH", headers: this.h(t), body: JSON.stringify(payload) });
+    if (!r.ok) { console.error("Update transaksi gagal:", await r.text()); return null; }
+    return r.json();
   },
   async remove(t, id) { await fetch(`${SUPABASE_URL}/rest/v1/transaksi?id=eq.${id}`, { method: "DELETE", headers: this.h(t) }); },
 
