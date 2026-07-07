@@ -429,7 +429,7 @@ function GlobalStyles({ dark }) {
       body { transition: background 0.3s, color 0.3s; }
 
       @keyframes fadeSlideIn {
-        from { opacity: 0; transform: translateY(8px); }
+        from { opacity: 0; transform: translateY(10px); }
         to   { opacity: 1; transform: translateY(0); }
       }
       @keyframes fadeIn {
@@ -437,12 +437,12 @@ function GlobalStyles({ dark }) {
         to   { opacity: 1; }
       }
       @keyframes shimmer {
-        0%   { background-position: -200px 0; }
-        100% { background-position: 200px 0; }
+        0%   { background-position: -300px 0; }
+        100% { background-position: 300px 0; }
       }
       @keyframes popIn {
-        0%   { transform: scale(0.9); opacity: 0; }
-        60%  { transform: scale(1.03); }
+        0%   { transform: scale(0.92); opacity: 0; }
+        55%  { transform: scale(1.025); }
         100% { transform: scale(1); opacity: 1; }
       }
       @keyframes bounce {
@@ -453,31 +453,69 @@ function GlobalStyles({ dark }) {
         from { transform: translateX(0); opacity: 1; max-height: 200px; margin-bottom: 10px; }
         to   { transform: translateX(-100%); opacity: 0; max-height: 0; margin-bottom: 0; }
       }
-      @keyframes toggleSlide {
-        from { transform: translateX(0); }
-        to   { transform: translateX(20px); }
-      }
       @keyframes pulseRing {
-        0%   { box-shadow: 0 0 0 0 rgba(59,130,246,0.4); }
-        70%  { box-shadow: 0 0 0 8px rgba(59,130,246,0); }
-        100% { box-shadow: 0 0 0 0 rgba(59,130,246,0); }
+        0%   { box-shadow: 0 0 0 0 rgba(212,160,23,0.35); }
+        70%  { box-shadow: 0 0 0 9px rgba(212,160,23,0); }
+        100% { box-shadow: 0 0 0 0 rgba(212,160,23,0); }
+      }
+      @keyframes rippleEffect {
+        from { transform: scale(0); opacity: 0.45; }
+        to   { transform: scale(2.6); opacity: 0; }
+      }
+      @keyframes pageEnter {
+        from { opacity: 0; transform: translateY(14px) scale(0.99); }
+        to   { opacity: 1; transform: translateY(0) scale(1); }
+      }
+      @keyframes splashFade {
+        0%   { opacity: 1; }
+        80%  { opacity: 1; }
+        100% { opacity: 0; visibility: hidden; }
+      }
+      @keyframes splashLogoIn {
+        0%   { transform: scale(0.7); opacity: 0; }
+        60%  { transform: scale(1.06); opacity: 1; }
+        100% { transform: scale(1); opacity: 1; }
+      }
+      @keyframes confettiFall {
+        0%   { transform: translateY(-20px) rotate(0deg); opacity: 1; }
+        100% { transform: translateY(340px) rotate(540deg); opacity: 0; }
+      }
+      @keyframes shineSweep {
+        0%   { transform: translateX(-120%) skewX(-20deg); }
+        100% { transform: translateX(220%) skewX(-20deg); }
       }
 
-      .tab-content { animation: fadeSlideIn 0.3s ease-out; }
-      .card-enter  { animation: popIn 0.35s cubic-bezier(0.34,1.56,0.64,1); }
-      .list-item   { animation: fadeSlideIn 0.3s ease-out; transition: transform 0.15s, box-shadow 0.15s; }
+      .tab-content { animation: pageEnter 0.36s cubic-bezier(0.22,1,0.36,1); }
+      .card-enter  { animation: popIn 0.4s cubic-bezier(0.34,1.56,0.64,1); }
+      .list-item   { animation: fadeSlideIn 0.32s cubic-bezier(0.22,1,0.36,1); transition: transform 0.18s ease, box-shadow 0.18s ease; }
       .list-item:active { transform: scale(0.98); }
       .list-item.removing { animation: slideOutLeft 0.3s ease-in forwards; }
+
+      /* Hover lift — hanya aktif di device dengan mouse (hindari "stuck hover" di touch) */
+      @media (hover: hover) {
+        .hover-lift { transition: transform 0.22s cubic-bezier(0.22,1,0.36,1), box-shadow 0.22s ease; }
+        .hover-lift:hover {
+          transform: translateY(-3px);
+          box-shadow: ${dark ? "0 12px 28px rgba(0,0,0,0.45)" : "0 12px 28px rgba(32,32,28,0.12)"};
+        }
+      }
+
+      /* Ripple: elemen dengan class ini + posisi relative akan memunculkan lingkaran dari titik klik */
+      .ripple-container { position: relative; overflow: hidden; }
+      .ripple {
+        position: absolute; border-radius: 50%; background: currentColor;
+        pointer-events: none; animation: rippleEffect 0.6s ease-out;
+      }
 
       .btn-press { transition: transform 0.1s, opacity 0.1s, box-shadow 0.15s; }
       .btn-press:active { transform: scale(0.96); opacity: 0.85; }
 
       .skeleton {
         background: ${dark
-          ? "linear-gradient(90deg,#1e1e2a 25%,#26262f 50%,#1e1e2a 75%)"
-          : "linear-gradient(90deg,#F1EEE4 25%,#FDFCF8 50%,#F1EEE4 75%)"};
-        background-size: 400px 100%;
-        animation: shimmer 1.4s infinite linear;
+          ? "linear-gradient(100deg,#1e1e2a 20%,#2c2c3a 40%,#2c2c3a 60%,#1e1e2a 80%)"
+          : "linear-gradient(100deg,#F1EEE4 20%,#ffffff 40%,#ffffff 60%,#F1EEE4 80%)"};
+        background-size: 300px 100%;
+        animation: shimmer 1.3s infinite linear;
         border-radius: 8px;
       }
 
@@ -494,17 +532,35 @@ function GlobalStyles({ dark }) {
         box-shadow: 0 0 0 3px ${dark ? "rgba(212,160,23,0.18)" : "rgba(184,134,11,0.12)"};
       }
 
+      /* Sidebar nav item — indikator emas kini elemen terpisah yang meluncur (lihat SidebarIndicator) */
       .sidebar-item {
-        transition: background 0.15s, color 0.15s, border-color 0.15s;
+        transition: background 0.18s ease, color 0.18s ease;
         position: relative;
-      }
-      .sidebar-item.active::before {
-        content: '';
-        position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px;
-        background: ${ACCENT_GOLD_L}; border-radius: 0 3px 3px 0;
       }
 
       .num-tabular { font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+
+      /* Glassmorphism untuk modal (Scan Struk, Voice, Export) */
+      .glass-modal {
+        background: ${dark ? "rgba(30,30,42,0.75)" : "rgba(255,255,255,0.72)"};
+        backdrop-filter: blur(20px) saturate(160%);
+        -webkit-backdrop-filter: blur(20px) saturate(160%);
+        border: 1px solid ${dark ? "rgba(255,255,255,0.08)" : "rgba(255,255,255,0.6)"};
+      }
+      .glass-overlay {
+        backdrop-filter: blur(3px);
+        -webkit-backdrop-filter: blur(3px);
+      }
+
+      /* Shine sweep — dipakai di kartu saldo utama untuk kesan premium halus */
+      .shine-sweep { position: relative; overflow: hidden; }
+      .shine-sweep::after {
+        content: '';
+        position: absolute; top: 0; left: 0; width: 40%; height: 100%;
+        background: linear-gradient(100deg, transparent, rgba(255,255,255,0.12), transparent);
+        animation: shineSweep 3.5s ease-in-out infinite;
+        animation-delay: 1s;
+      }
 
       /* Scrollbar */
       ::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -514,9 +570,76 @@ function GlobalStyles({ dark }) {
   );
 }
 
+// ── Ripple click effect ───────────────────────────────────────
+// Bungkus elemen manapun dengan onMouseDown={createRipple} + class "ripple-container"
+function createRipple(e) {
+  const container = e.currentTarget;
+  const rect = container.getBoundingClientRect();
+  const size = Math.max(rect.width, rect.height);
+  const x = e.clientX - rect.left - size / 2;
+  const y = e.clientY - rect.top - size / 2;
+
+  const ripple = document.createElement("span");
+  ripple.className = "ripple";
+  ripple.style.width = ripple.style.height = `${size}px`;
+  ripple.style.left = `${x}px`;
+  ripple.style.top = `${y}px`;
+  container.appendChild(ripple);
+  setTimeout(() => ripple.remove(), 650);
+}
+
+// ── Splash Screen — muncul sesaat di load pertama ──────────────
+function SplashScreen() {
+  const { dark } = useTheme();
+  const t = tokens(dark);
+  return (
+    <div style={{
+      position:"fixed", inset:0, zIndex:9999,
+      background: t.sidebarBg, display:"flex", alignItems:"center", justifyContent:"center",
+      flexDirection:"column", gap:16,
+      animation:"splashFade 1.1s ease-out forwards",
+    }}>
+      <div style={{
+        width:64, height:64, borderRadius:16,
+        background:`linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`,
+        display:"flex", alignItems:"center", justifyContent:"center",
+        fontFamily:t.fontDisplay, fontWeight:700, fontSize:32, color:"#181820",
+        animation:"splashLogoIn 0.6s cubic-bezier(0.34,1.56,0.64,1)",
+      }}>D</div>
+      <div style={{ fontFamily:t.fontDisplay, fontWeight:600, fontSize:16, color:"#FDFCF8", letterSpacing:"0.02em" }}>Dompet Saya</div>
+    </div>
+  );
+}
+
+// ── Confetti ringan — dipanggil sekali saat momen pencapaian ───
+function Confetti() {
+  const colors = [ACCENT_GOLD_L, "#2D8A63", "#B84545", ACCENT_GOLD, "#FDFCF8"];
+  const pieces = Array.from({ length: 24 }, (_, i) => ({
+    id: i,
+    left: Math.random() * 100,
+    color: colors[i % colors.length],
+    delay: Math.random() * 0.4,
+    duration: 1.6 + Math.random() * 0.8,
+    size: 5 + Math.random() * 5,
+  }));
+  return (
+    <div style={{ position:"fixed", inset:0, pointerEvents:"none", zIndex:998, overflow:"hidden" }}>
+      {pieces.map(p => (
+        <div key={p.id} style={{
+          position:"absolute", top:-20, left:`${p.left}%`,
+          width:p.size, height:p.size, background:p.color,
+          borderRadius: p.id % 2 === 0 ? "50%" : "2px",
+          animation:`confettiFall ${p.duration}s ease-in ${p.delay}s forwards`,
+        }} />
+      ))}
+    </div>
+  );
+}
+
 // ── Angka dengan animasi count-up ────────────────────────────
 function AnimatedNumber({ value, format = formatRp }) {
   const [display, setDisplay] = useState(value);
+
 
   useEffect(() => {
     const start = display;
@@ -571,14 +694,15 @@ function ScanStrukModal({ onClose, onHasil }) {
   };
 
   return (
-    <div style={{
-      position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", zIndex:1000,
+    <div className="glass-overlay" style={{
+      position:"fixed", inset:0, background: dark?"rgba(10,10,15,0.55)":"rgba(32,32,28,0.35)", zIndex:1000,
       display:"flex", alignItems:"flex-end", justifyContent:"center",
       animation:"fadeIn 0.2s ease-out",
     }} onClick={onClose}>
-      <div className="card-enter" onClick={e=>e.stopPropagation()} style={{
-        background:t.surface, borderRadius:"20px 20px 0 0", padding:20,
+      <div className="card-enter glass-modal" onClick={e=>e.stopPropagation()} style={{
+        borderRadius:"20px 20px 0 0", padding:20,
         width:"100%", maxWidth:480, maxHeight:"85vh", overflowY:"auto",
+        boxShadow: dark ? "0 -8px 40px rgba(0,0,0,0.5)" : "0 -8px 40px rgba(32,32,28,0.15)",
       }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
           <div style={{ fontWeight:700, fontSize:16, color:t.text }}>📸 Scan Struk</div>
@@ -709,14 +833,15 @@ function VoiceInputModal({ onClose, onHasil }) {
   };
 
   return (
-    <div style={{
-      position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", zIndex:1000,
+    <div className="glass-overlay" style={{
+      position:"fixed", inset:0, background: dark?"rgba(10,10,15,0.55)":"rgba(32,32,28,0.35)", zIndex:1000,
       display:"flex", alignItems:"flex-end", justifyContent:"center",
       animation:"fadeIn 0.2s ease-out",
     }} onClick={onClose}>
-      <div className="card-enter" onClick={e=>e.stopPropagation()} style={{
-        background:t.surface, borderRadius:"20px 20px 0 0", padding:24,
+      <div className="card-enter glass-modal" onClick={e=>e.stopPropagation()} style={{
+        borderRadius:"20px 20px 0 0", padding:24,
         width:"100%", maxWidth:480, textAlign:"center",
+        boxShadow: dark ? "0 -8px 40px rgba(0,0,0,0.5)" : "0 -8px 40px rgba(32,32,28,0.15)",
       }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
           <div style={{ fontWeight:700, fontSize:16, color:t.text }}>🎙️ Catat dengan Suara</div>
@@ -862,14 +987,15 @@ function ExportModal({ transaksi, dompet, onClose, showToast }) {
   };
 
   return (
-    <div style={{
-      position:"fixed", inset:0, background:"rgba(0,0,0,0.6)", zIndex:1000,
+    <div className="glass-overlay" style={{
+      position:"fixed", inset:0, background: dark?"rgba(10,10,15,0.55)":"rgba(32,32,28,0.35)", zIndex:1000,
       display:"flex", alignItems:"flex-end", justifyContent:"center",
       animation:"fadeIn 0.2s ease-out",
     }} onClick={onClose}>
-      <div className="card-enter" onClick={e=>e.stopPropagation()} style={{
-        background:t.surface, borderRadius:"20px 20px 0 0", padding:20,
+      <div className="card-enter glass-modal" onClick={e=>e.stopPropagation()} style={{
+        borderRadius:"20px 20px 0 0", padding:20,
         width:"100%", maxWidth:480, maxHeight:"85vh", overflowY:"auto",
+        boxShadow: dark ? "0 -8px 40px rgba(0,0,0,0.5)" : "0 -8px 40px rgba(32,32,28,0.15)",
       }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:18 }}>
           <div style={{ fontWeight:700, fontSize:16, color:t.text }}>📤 Export Data</div>
@@ -1336,7 +1462,7 @@ function AuthScreen({ onAuth }) {
           {/* Tombol Biometric Unlock — muncul kalau device support & sudah pernah didaftarkan */}
           {mode === "login" && biometricTersedia && (
             <>
-              <button className="btn-press" onClick={handleBukaBiometric} disabled={biometricLoading} style={{
+              <button className="btn-press ripple-container" onMouseDown={createRipple} onClick={handleBukaBiometric} disabled={biometricLoading} style={{
                 width:"100%", padding:13, borderRadius:9, border:`1.5px solid ${t.gold}`, marginBottom:14,
                 background: dark ? "rgba(212,160,23,0.1)" : "rgba(184,134,11,0.06)", color:t.gold,
                 fontWeight:700, fontSize:14, cursor:biometricLoading?"not-allowed":"pointer",
@@ -1366,7 +1492,7 @@ function AuthScreen({ onAuth }) {
             <label style={{ fontSize:12, fontWeight:600, color:t.textSub, marginBottom:6, display:"block" }}>Kata sandi</label>
             <input type="password" placeholder="••••••••" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handle()} style={inp} />
           </div>
-          <button className="btn-press" onClick={handle} disabled={loading} style={{
+          <button className="btn-press ripple-container" onMouseDown={createRipple} onClick={handle} disabled={loading} style={{
             width:"100%", padding:13, borderRadius:9, border:"none",
             background: loading ? t.textMuted : `linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`,
             color:"#181820", fontWeight:700, fontSize:14.5, cursor:loading?"not-allowed":"pointer",
@@ -1614,11 +1740,11 @@ function TabDompet({ dompet, transaksi, token, showToast, onDompetChange, aktivD
         const saldo = saldoPerDompet[d.id] || 0;
         const txCount = transaksi.filter(tx=>tx.dompet_id===d.id).length;
         return (
-          <div key={d.id} className="list-item" style={{
+          <div key={d.id} className="list-item hover-lift" style={{
             animationDelay:`${i*0.05}s`, animationFillMode:"backwards",
             background:t.surface, borderRadius:12, padding:18, marginBottom:12,
             boxShadow:t.cardShadow, border:`1px solid ${aktivDompetId===d.id ? d.warna : t.border}`,
-            transition:"border-color 0.2s",
+            transition:"border-color 0.2s, transform 0.22s cubic-bezier(0.22,1,0.36,1), box-shadow 0.22s ease",
           }}>
             <div style={{ display:"flex", alignItems:"center", gap:14 }}>
               {/* Ikon */}
@@ -2261,6 +2387,13 @@ export default function App() {
   const [showExport, setShowExport] = useState(false);
   const [pendingSync, setPendingSync] = useState(() => offlineQueue.get().length);
   const [biometricAktif, setBiometricAktif] = useState(() => isBiometricTerdaftar());
+  const [showConfetti, setShowConfetti] = useState(false);
+  const [showSplash, setShowSplash] = useState(true);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setShowSplash(false), 1000);
+    return () => clearTimeout(timer);
+  }, []);
   const [syncing, setSyncing] = useState(false);
   const online = useOnlineStatus();
 
@@ -2482,7 +2615,16 @@ export default function App() {
 
     try {
       if (editId) { await sb.update(token,editId,payload); setTx(prev=>prev.map(t=>t.id===editId?{...t,...payload}:t)); showToast("Transaksi diperbarui ✓"); }
-      else { const r = await sb.insert(token,payload); if (r?.[0]) setTx(prev=>[r[0],...prev]); showToast("Transaksi disimpan ✓"); }
+      else {
+        const isTransaksiPertama = transaksi.length === 0;
+        const r = await sb.insert(token,payload);
+        if (r?.[0]) setTx(prev=>[r[0],...prev]);
+        showToast("Transaksi disimpan ✓");
+        if (isTransaksiPertama) {
+          setShowConfetti(true);
+          setTimeout(()=>setShowConfetti(false), 2200);
+        }
+      }
       resetForm();
     } catch {
       // Request gagal walau navigator bilang online (misal koneksi lemah) — fallback ke queue juga
@@ -2520,6 +2662,7 @@ export default function App() {
     <ThemeCtx.Provider value={{ dark }}>
       <FontLoader />
       <GlobalStyles dark={dark} />
+      {showSplash && <SplashScreen />}
       <AuthScreen onAuth={handleAuth} />
     </ThemeCtx.Provider>
   );
@@ -2528,6 +2671,7 @@ export default function App() {
     <ThemeCtx.Provider value={{ dark }}>
       <FontLoader />
       <GlobalStyles dark={dark} />
+      {showSplash && <SplashScreen />}
       <div className="theme-transition" style={{ minHeight:"100vh", background:th.bg, fontFamily:th.fontBody, color:th.text }}>
         <Toast msg={toast.msg} type={toast.type} />
 
@@ -2555,9 +2699,17 @@ export default function App() {
           </div>
 
           {/* Nav items */}
-          <nav style={{ flex:1, padding:"16px 12px", overflowY:"auto" }}>
+          <nav style={{ flex:1, padding:"16px 12px", overflowY:"auto", position:"relative" }}>
+            {/* Indikator emas yang meluncur halus mengikuti tab aktif */}
+            <div style={{
+              position:"absolute", left:12, width:3, borderRadius:"0 3px 3px 0",
+              background:ACCENT_GOLD_L, height:36,
+              top: 16 + TABS.findIndex(tb=>tb.id===tab) * 38,
+              transition:"top 0.32s cubic-bezier(0.22,1,0.36,1)",
+              pointerEvents:"none",
+            }} />
             {TABS.map(tb => (
-              <button key={tb.id} className={`sidebar-item ${tab===tb.id ? "active" : ""}`} onClick={()=>setTab(tb.id)} style={{
+              <button key={tb.id} className="sidebar-item ripple-container" onMouseDown={createRipple} onClick={()=>setTab(tb.id)} style={{
                 width:"100%", display:"flex", alignItems:"center", gap:12,
                 padding:"10px 14px", marginBottom:2, borderRadius:8, border:"none",
                 background: tab===tb.id ? "rgba(255,255,255,0.06)" : "transparent",
@@ -2565,7 +2717,7 @@ export default function App() {
                 fontWeight: tab===tb.id ? 600 : 500, fontSize:13.5, cursor:"pointer",
                 textAlign:"left", fontFamily:th.fontBody,
               }}>
-                <span style={{ fontSize:15, opacity: tab===tb.id ? 1 : 0.6, width:18, textAlign:"center", color: tab===tb.id ? ACCENT_GOLD_L : "inherit" }}>{tb.icon}</span>
+                <span style={{ fontSize:15, opacity: tab===tb.id ? 1 : 0.6, width:18, textAlign:"center", color: tab===tb.id ? ACCENT_GOLD_L : "inherit", transition:"opacity 0.2s, color 0.2s" }}>{tb.icon}</span>
                 {tb.label}
               </button>
             ))}
@@ -2600,7 +2752,12 @@ export default function App() {
         <div className="main-content-area" style={{ marginLeft:236, minHeight:"100vh" }}>
 
           {/* Top bar: saldo ledger-style + tombol tambah */}
-          <div style={{ background:th.bgPaper, borderBottom:`1px solid ${th.border}`, padding:"22px 32px" }}>
+          <div className="shine-sweep" style={{
+            background: dark
+              ? `linear-gradient(135deg, ${th.bgPaper} 0%, #1c1c28 100%)`
+              : `linear-gradient(135deg, ${th.bgPaper} 0%, #FFFFFF 100%)`,
+            borderBottom:`1px solid ${th.border}`, padding:"22px 32px",
+          }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end", flexWrap:"wrap", gap:16 }}>
               <div style={{ display:"flex", gap:36, flexWrap:"wrap" }}>
                 <div>
@@ -2623,7 +2780,7 @@ export default function App() {
                 </div>
               </div>
 
-              <button className="btn-press" onClick={()=>{ setShowForm(!showForm); setEditId(null); setForm({ tipe:"pengeluaran", kategori:"", jumlah:"", catatan:"", tanggal:today(), dompet_id: aktivDompetId||"" }); setTab("transaksi"); }}
+              <button className="btn-press ripple-container" onMouseDown={createRipple} onClick={()=>{ setShowForm(!showForm); setEditId(null); setForm({ tipe:"pengeluaran", kategori:"", jumlah:"", catatan:"", tanggal:today(), dompet_id: aktivDompetId||"" }); setTab("transaksi"); }}
                 style={{
                   background:`linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`, border:"none", color:"#181820",
                   borderRadius:8, padding:"11px 20px", fontSize:13.5, cursor:"pointer", fontWeight:700,
@@ -2696,7 +2853,7 @@ export default function App() {
                 <input type="date" value={form.tanggal} onChange={e=>setForm(f=>({...f,tanggal:e.target.value}))} style={{ ...inp, marginBottom:18, colorScheme: dark?"dark":"light" }} />
                 <div style={{ display:"flex", gap:8 }}>
                   <button className="btn-press" onClick={resetForm} style={{ flex:1, padding:12, borderRadius:9, border:`1.5px solid ${th.border}`, background:th.surface2, color:th.textSub, fontWeight:600, cursor:"pointer", fontSize:14 }}>Batal</button>
-                  <button className="btn-press" onClick={handleSubmit} disabled={loading} style={{
+                  <button className="btn-press ripple-container" onMouseDown={createRipple} onClick={handleSubmit} disabled={loading} style={{
                     flex:2, padding:12, borderRadius:9, border:"none",
                     background: loading ? th.textMuted : `linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`,
                     color:"#181820", fontWeight:700, cursor:"pointer", fontSize:14,
@@ -2754,7 +2911,7 @@ export default function App() {
                   ) : filtered.length===0 ? (
                     <EmptyState icon="☰" title="Belum ada transaksi" subtitle="Klik 'Catat Transaksi' di atas untuk menambahkan" />
                   ) : filtered.map((tx,i)=>(
-                    <div key={tx.id} className="list-item" style={{
+                    <div key={tx.id} className="list-item hover-lift" style={{
                       animationDelay:`${Math.min(i*0.04,0.3)}s`, animationFillMode:"backwards",
                       background:th.surface, borderRadius:11, padding:"14px 16px", marginBottom:8,
                       boxShadow:th.cardShadow, display:"flex", alignItems:"center", gap:12,
@@ -2802,10 +2959,12 @@ export default function App() {
           justifyContent:"space-around", alignItems:"center",
         }}>
           {TABS.map(tb => (
-            <button key={tb.id} className="btn-press" onClick={()=>setTab(tb.id)} style={{
+            <button key={tb.id} className="btn-press ripple-container" onMouseDown={createRipple} onClick={()=>setTab(tb.id)} style={{
               display:"flex", flexDirection:"column", alignItems:"center", gap:2,
               background:"transparent", border:"none", cursor:"pointer",
               color: tab===tb.id ? ACCENT_GOLD_L : th.sidebarText, padding:"4px 6px", flex:1,
+              transform: tab===tb.id ? "translateY(-2px)" : "translateY(0)",
+              transition:"transform 0.22s cubic-bezier(0.34,1.56,0.64,1), color 0.2s",
             }}>
               <span style={{ fontSize:17 }}>{tb.icon}</span>
               <span style={{ fontSize:9.5, fontWeight:600 }}>{tb.label}</span>
@@ -2816,6 +2975,7 @@ export default function App() {
         {showScan && <ScanStrukModal onClose={()=>setShowScan(false)} onHasil={handleHasilScan} />}
         {showVoice && <VoiceInputModal onClose={()=>setShowVoice(false)} onHasil={handleHasilVoice} />}
         {showExport && <ExportModal transaksi={transaksi} dompet={dompet} onClose={()=>setShowExport(false)} showToast={showToast} />}
+        {showConfetti && <Confetti />}
       </div>
     </ThemeCtx.Provider>
   );
