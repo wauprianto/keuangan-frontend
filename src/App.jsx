@@ -968,6 +968,105 @@ function ExportModal({ transaksi, dompet, onClose, showToast }) {
 }
 
 // ── Toggle Dark Mode ─────────────────────────────────────────
+// ── Biometric Lock (WebAuthn) ────────────────────────────────
+// Catatan penting soal desain ini:
+// WebAuthn dirancang untuk autentikasi tanpa password dengan server yang
+// bisa verifikasi kriptografi (public/private key pair). Supabase Auth kita
+// tetap butuh email+password asli untuk dapat access_token.
+// Jadi biometric di sini BUKAN pengganti login Supabase, melainkan
+// "kunci cepat lokal": biometric membuka brankas berisi email+password yang
+// tersimpan (dienkode) di device, lalu otomatis submit ke Supabase seperti
+// login manual. Ini pola yang sama dipakai banyak app finance untuk "quick unlock".
+const BIOMETRIC_CRED_KEY = "dompetsaya_biometric_cred_id";
+const BIOMETRIC_VAULT_KEY = "dompetsaya_biometric_vault";
+
+function isWebAuthnSupported() {
+  return typeof window !== "undefined"
+    && window.PublicKeyCredential
+    && typeof window.PublicKeyCredential === "function";
+}
+
+async function isBiometricAvailableOnDevice() {
+  if (!isWebAuthnSupported()) return false;
+  try {
+    return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+  } catch {
+    return false;
+  }
+}
+
+function randomChallenge() {
+  const arr = new Uint8Array(32);
+  crypto.getRandomValues(arr);
+  return arr;
+}
+
+// Enkode sederhana untuk vault lokal — BUKAN enkripsi kriptografi kuat,
+// hanya obfuscation dasar supaya tidak tersimpan sebagai plaintext polos
+// di localStorage. Keamanan sebenarnya bergantung pada gerbang biometric OS
+// (Face ID/Touch ID/Windows Hello) yang mengontrol akses ke device itu sendiri.
+function encodeVault(data) {
+  return btoa(unescape(encodeURIComponent(JSON.stringify(data))));
+}
+function decodeVault(encoded) {
+  try { return JSON.parse(decodeURIComponent(escape(atob(encoded)))); }
+  catch { return null; }
+}
+
+// Daftarkan biometric baru untuk device ini (dipanggil setelah login manual berhasil)
+async function daftarkanBiometric(email, password) {
+  const publicKey = {
+    challenge: randomChallenge(),
+    rp: { name: "Dompet Saya" },
+    user: {
+      id: new TextEncoder().encode(email),
+      name: email,
+      displayName: email,
+    },
+    pubKeyCredParams: [{ alg: -7, type: "public-key" }, { alg: -257, type: "public-key" }],
+    authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required" },
+    timeout: 60000,
+  };
+
+  const credential = await navigator.credentials.create({ publicKey });
+  const credId = btoa(String.fromCharCode(...new Uint8Array(credential.rawId)));
+
+  localStorage.setItem(BIOMETRIC_CRED_KEY, credId);
+  localStorage.setItem(BIOMETRIC_VAULT_KEY, encodeVault({ email, password }));
+  return true;
+}
+
+// Minta verifikasi biometric, dan kalau berhasil kembalikan kredensial tersimpan
+async function bukaBiometric() {
+  const credId = localStorage.getItem(BIOMETRIC_CRED_KEY);
+  if (!credId) throw new Error("Belum ada biometric terdaftar di device ini");
+
+  const rawId = Uint8Array.from(atob(credId), c => c.charCodeAt(0));
+  const publicKey = {
+    challenge: randomChallenge(),
+    allowCredentials: [{ id: rawId, type: "public-key", transports: ["internal"] }],
+    userVerification: "required",
+    timeout: 60000,
+  };
+
+  await navigator.credentials.get({ publicKey }); // akan throw kalau user batal / gagal verifikasi
+
+  const vault = localStorage.getItem(BIOMETRIC_VAULT_KEY);
+  const decoded = vault ? decodeVault(vault) : null;
+  if (!decoded) throw new Error("Data tersimpan tidak ditemukan, silakan login manual ulang");
+  return decoded; // { email, password }
+}
+
+function hapusBiometric() {
+  localStorage.removeItem(BIOMETRIC_CRED_KEY);
+  localStorage.removeItem(BIOMETRIC_VAULT_KEY);
+}
+
+function isBiometricTerdaftar() {
+  return !!localStorage.getItem(BIOMETRIC_CRED_KEY);
+}
+
+
 // ── Hook: Deteksi status online/offline browser ────────────────
 function useOnlineStatus() {
   const [online, setOnline] = useState(navigator.onLine);
@@ -1073,24 +1172,110 @@ function AuthScreen({ onAuth }) {
   const [pw, setPw] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
+  const [biometricTersedia, setBiometricTersedia] = useState(false);
+  const [biometricLoading, setBiometricLoading] = useState(false);
+  const [showSetupPrompt, setShowSetupPrompt] = useState(false);
+  const [pendingCreds, setPendingCreds] = useState(null); // { email, password } menunggu ditawarkan setup biometric
+
+  useEffect(() => {
+    (async () => {
+      const supported = await isBiometricAvailableOnDevice();
+      setBiometricTersedia(supported && isBiometricTerdaftar());
+    })();
+  }, []);
+
+  const loginKeSupabase = async (loginEmail, loginPw) => {
+    const res = await sb.signIn(loginEmail, loginPw);
+    if (res.access_token) {
+      localStorage.setItem("sb_token", res.access_token);
+      localStorage.setItem("sb_refresh_token", res.refresh_token || "");
+      const expiresAt = Date.now() + (res.expires_in ? res.expires_in * 1000 : 3600 * 1000);
+      localStorage.setItem("sb_expires_at", String(expiresAt));
+      localStorage.setItem("sb_email", loginEmail);
+      onAuth(res.access_token, loginEmail);
+      return true;
+    }
+    setErr(res.error_description || "Email atau password salah");
+    return false;
+  };
 
   const handle = async () => {
     setErr(""); setLoading(true);
     try {
-      const res = mode === "login" ? await sb.signIn(email, pw) : await sb.signUp(email, pw);
-      if (res.access_token) {
-        localStorage.setItem("sb_token", res.access_token);
-        localStorage.setItem("sb_refresh_token", res.refresh_token || "");
-        // expires_in dalam detik (biasanya 3600 = 1 jam); simpan sebagai timestamp absolut
-        const expiresAt = Date.now() + (res.expires_in ? res.expires_in * 1000 : 3600 * 1000);
-        localStorage.setItem("sb_expires_at", String(expiresAt));
-        localStorage.setItem("sb_email", email);
-        onAuth(res.access_token, email);
+      if (mode === "login") {
+        const sukses = await loginKeSupabase(email, pw);
+        // Tawarkan setup biometric kalau berhasil login manual & device mendukung, & belum pernah didaftarkan
+        if (sukses) {
+          const supported = await isBiometricAvailableOnDevice();
+          if (supported && !isBiometricTerdaftar()) {
+            setPendingCreds({ email, password: pw });
+            setShowSetupPrompt(true);
+          }
+        }
+      } else {
+        const res = await sb.signUp(email, pw);
+        if (res.access_token) {
+          localStorage.setItem("sb_token", res.access_token);
+          localStorage.setItem("sb_refresh_token", res.refresh_token || "");
+          const expiresAt = Date.now() + (res.expires_in ? res.expires_in * 1000 : 3600 * 1000);
+          localStorage.setItem("sb_expires_at", String(expiresAt));
+          localStorage.setItem("sb_email", email);
+          onAuth(res.access_token, email);
+        } else setErr(res.error_description || res.msg || "Gagal membuat akun");
       }
-      else setErr(res.error_description || "Email atau password salah");
     } catch { setErr("Tidak dapat terhubung ke Supabase"); }
     setLoading(false);
   };
+
+  const handleBukaBiometric = async () => {
+    setErr(""); setBiometricLoading(true);
+    try {
+      const { email: savedEmail, password: savedPw } = await bukaBiometric();
+      await loginKeSupabase(savedEmail, savedPw);
+    } catch (e) {
+      setErr(e.message?.includes("belum ada") ? e.message : "Verifikasi biometric gagal atau dibatalkan");
+    }
+    setBiometricLoading(false);
+  };
+
+  const handleSetupBiometric = async () => {
+    if (!pendingCreds) return;
+    try {
+      await daftarkanBiometric(pendingCreds.email, pendingCreds.password);
+      setShowSetupPrompt(false);
+    } catch {
+      setErr("Gagal mendaftarkan biometric. Kamu tetap sudah login normal.");
+      setShowSetupPrompt(false);
+    }
+  };
+
+  // ── Prompt setup biometric (muncul overlay setelah login manual sukses) ──
+  if (showSetupPrompt) {
+    return (
+      <div style={{ minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center", background:t.bg, padding:24 }}>
+        <div className="card-enter" style={{ background:t.surface, borderRadius:16, padding:32, maxWidth:360, width:"100%", textAlign:"center", boxShadow:t.cardShadow, border:`1px solid ${t.borderSoft}` }}>
+          <div style={{
+            width:64, height:64, borderRadius:16, margin:"0 auto 20px",
+            background:`linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`,
+            display:"flex", alignItems:"center", justifyContent:"center", fontSize:30,
+          }}>👆</div>
+          <div style={{ fontFamily:t.fontDisplay, fontWeight:600, fontSize:19, color:t.text, marginBottom:8 }}>Aktifkan Kunci Cepat?</div>
+          <div style={{ fontSize:13.5, color:t.textMuted, lineHeight:1.7, marginBottom:24 }}>
+            Gunakan Face ID, sidik jari, atau Windows Hello untuk masuk lebih cepat lain kali — tanpa ketik ulang password.
+          </div>
+          <button className="btn-press" onClick={handleSetupBiometric} style={{
+            width:"100%", padding:13, borderRadius:9, border:"none", marginBottom:10,
+            background:`linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`, color:"#181820",
+            fontWeight:700, fontSize:14, cursor:"pointer",
+          }}>Aktifkan Sekarang</button>
+          <button className="btn-press" onClick={()=>setShowSetupPrompt(false)} style={{
+            width:"100%", padding:12, borderRadius:9, border:`1.5px solid ${t.border}`,
+            background:"transparent", color:t.textMuted, fontWeight:600, fontSize:13.5, cursor:"pointer",
+          }}>Nanti Saja</button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ minHeight:"100vh", display:"flex", flexWrap:"wrap", background:t.bg }}>
@@ -1147,6 +1332,25 @@ function AuthScreen({ onAuth }) {
               {mode === "login" ? "Masuk untuk melanjutkan pencatatan" : "Mulai catat keuangan kamu hari ini"}
             </div>
           </div>
+
+          {/* Tombol Biometric Unlock — muncul kalau device support & sudah pernah didaftarkan */}
+          {mode === "login" && biometricTersedia && (
+            <>
+              <button className="btn-press" onClick={handleBukaBiometric} disabled={biometricLoading} style={{
+                width:"100%", padding:13, borderRadius:9, border:`1.5px solid ${t.gold}`, marginBottom:14,
+                background: dark ? "rgba(212,160,23,0.1)" : "rgba(184,134,11,0.06)", color:t.gold,
+                fontWeight:700, fontSize:14, cursor:biometricLoading?"not-allowed":"pointer",
+                display:"flex", alignItems:"center", justifyContent:"center", gap:8,
+              }}>
+                <span style={{ fontSize:18 }}>👆</span> {biometricLoading ? "Memverifikasi..." : "Buka dengan Face ID / Sidik Jari"}
+              </button>
+              <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:14 }}>
+                <div style={{ flex:1, height:1, background:t.border }} />
+                <span style={{ fontSize:11, color:t.textMuted, textTransform:"uppercase", letterSpacing:"0.04em" }}>atau</span>
+                <div style={{ flex:1, height:1, background:t.border }} />
+              </div>
+            </>
+          )}
 
           <div style={{ display:"flex", background:t.surface2, borderRadius:9, padding:4, marginBottom:22 }}>
             {["login","register"].map(m => <button key={m} className="btn-press" onClick={()=>{setMode(m);setErr("");}} style={{ flex:1, padding:"9px", borderRadius:6, border:"none", background:mode===m?t.surface:"transparent", color:mode===m?t.text:t.textMuted, fontWeight:600, fontSize:13, cursor:"pointer", boxShadow: mode===m ? t.cardShadow : "none" }}>{m==="login"?"Masuk":"Daftar"}</button>)}
@@ -2056,6 +2260,7 @@ export default function App() {
   const [showVoice, setShowVoice] = useState(false);
   const [showExport, setShowExport] = useState(false);
   const [pendingSync, setPendingSync] = useState(() => offlineQueue.get().length);
+  const [biometricAktif, setBiometricAktif] = useState(() => isBiometricTerdaftar());
   const [syncing, setSyncing] = useState(false);
   const online = useOnlineStatus();
 
@@ -2163,6 +2368,27 @@ export default function App() {
     localStorage.removeItem("sb_email");
     setToken(null); setEmail(""); setTx([]);
   };
+
+  const toggleBiometric = async () => {
+    if (biometricAktif) {
+      if (!confirm("Nonaktifkan kunci cepat Face ID/Sidik Jari di device ini?")) return;
+      hapusBiometric();
+      setBiometricAktif(false);
+      showToast("Kunci cepat dinonaktifkan");
+    } else {
+      // User perlu masukkan password lagi untuk daftar ulang (kita tidak simpan password mentah di state)
+      const pw = prompt("Masukkan password kamu untuk mengaktifkan kunci cepat:");
+      if (!pw) return;
+      try {
+        await daftarkanBiometric(email, pw);
+        setBiometricAktif(true);
+        showToast("✓ Kunci cepat diaktifkan");
+      } catch {
+        showToast("Gagal mengaktifkan kunci cepat", "error");
+      }
+    }
+  };
+
   const resetForm    = () => { setForm({ tipe:"pengeluaran", kategori:"", jumlah:"", catatan:"", tanggal:today(), dompet_id: aktivDompetId||"" }); setEditId(null); setShowForm(false); };
 
   const handleHasilScan = (hasil) => {
@@ -2354,6 +2580,15 @@ export default function App() {
               </div>
               <DarkToggle dark={dark} onToggle={toggleDark} />
             </div>
+            <button className="btn-press" onClick={toggleBiometric} style={{
+              width:"100%", padding:"8px", borderRadius:7, border:"1px solid rgba(255,255,255,0.1)",
+              background: biometricAktif ? "rgba(212,160,23,0.12)" : "transparent",
+              color: biometricAktif ? ACCENT_GOLD_L : th.sidebarText,
+              fontWeight:600, fontSize:11.5, cursor:"pointer", marginBottom:8,
+              display:"flex", alignItems:"center", justifyContent:"center", gap:6,
+            }}>
+              <span>👆</span> {biometricAktif ? "Kunci Cepat Aktif" : "Aktifkan Kunci Cepat"}
+            </button>
             <button className="btn-press" onClick={handleLogout} style={{
               width:"100%", padding:"8px", borderRadius:7, border:"1px solid rgba(255,255,255,0.1)",
               background:"transparent", color:th.sidebarText, fontWeight:600, fontSize:12, cursor:"pointer",
