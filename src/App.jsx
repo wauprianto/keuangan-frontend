@@ -1108,6 +1108,7 @@ const BIOMETRIC_VAULT_KEY = "dompetsaya_biometric_vault";
 
 function isWebAuthnSupported() {
   return typeof window !== "undefined"
+    && window.isSecureContext // WebAuthn wajib HTTPS (atau localhost) — akan gagal diam-diam kalau tidak
     && window.PublicKeyCredential
     && typeof window.PublicKeyCredential === "function";
 }
@@ -1143,23 +1144,36 @@ function decodeVault(encoded) {
 async function daftarkanBiometric(email, password) {
   const publicKey = {
     challenge: randomChallenge(),
-    rp: { name: "Dompet Saya" },
+    // rp.id wajib diisi eksplisit di sejumlah versi Safari/iOS — tanpa ini,
+    // permintaan bisa ditolak diam-diam tanpa error yang jelas.
+    rp: { name: "Dompet Saya", id: window.location.hostname },
     user: {
       id: new TextEncoder().encode(email),
       name: email,
       displayName: email,
     },
     pubKeyCredParams: [{ alg: -7, type: "public-key" }, { alg: -257, type: "public-key" }],
-    authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required" },
+    authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required", requireResidentKey: false },
     timeout: 60000,
+    attestation: "none",
   };
 
-  const credential = await navigator.credentials.create({ publicKey });
-  const credId = btoa(String.fromCharCode(...new Uint8Array(credential.rawId)));
+  try {
+    const credential = await navigator.credentials.create({ publicKey });
+    if (!credential) throw new Error("Perangkat tidak mengembalikan kredensial");
 
-  localStorage.setItem(BIOMETRIC_CRED_KEY, credId);
-  localStorage.setItem(BIOMETRIC_VAULT_KEY, encodeVault({ email, password }));
-  return true;
+    const credId = btoa(String.fromCharCode(...new Uint8Array(credential.rawId)));
+    localStorage.setItem(BIOMETRIC_CRED_KEY, credId);
+    localStorage.setItem(BIOMETRIC_VAULT_KEY, encodeVault({ email, password }));
+    return true;
+  } catch (err) {
+    // Terjemahkan error teknis WebAuthn jadi pesan yang bisa dipahami user
+    if (err.name === "NotAllowedError") throw new Error("Verifikasi dibatalkan atau ditolak. Coba lagi dan izinkan Face ID/Touch ID saat diminta.");
+    if (err.name === "InvalidStateError") throw new Error("Biometric untuk akun ini sudah pernah didaftarkan di device ini.");
+    if (err.name === "NotSupportedError") throw new Error("Device atau browser ini tidak mendukung biometric platform authenticator.");
+    if (err.name === "SecurityError") throw new Error("Domain tidak valid untuk WebAuthn. Pastikan diakses lewat HTTPS.");
+    throw new Error(`Gagal mendaftarkan biometric: ${err.message || err.name || "kesalahan tidak diketahui"}`);
+  }
 }
 
 // Minta verifikasi biometric, dan kalau berhasil kembalikan kredensial tersimpan
@@ -1170,12 +1184,20 @@ async function bukaBiometric() {
   const rawId = Uint8Array.from(atob(credId), c => c.charCodeAt(0));
   const publicKey = {
     challenge: randomChallenge(),
+    rpId: window.location.hostname,
     allowCredentials: [{ id: rawId, type: "public-key", transports: ["internal"] }],
     userVerification: "required",
     timeout: 60000,
   };
 
-  await navigator.credentials.get({ publicKey }); // akan throw kalau user batal / gagal verifikasi
+  try {
+    const assertion = await navigator.credentials.get({ publicKey });
+    if (!assertion) throw new Error("Verifikasi tidak berhasil");
+  } catch (err) {
+    if (err.name === "NotAllowedError") throw new Error("Verifikasi biometric dibatalkan atau ditolak.");
+    if (err.name === "InvalidStateError") throw new Error("Kredensial biometric tidak valid. Coba daftar ulang dari sidebar.");
+    throw new Error(`Verifikasi gagal: ${err.message || err.name || "kesalahan tidak diketahui"}`);
+  }
 
   const vault = localStorage.getItem(BIOMETRIC_VAULT_KEY);
   const decoded = vault ? decodeVault(vault) : null;
@@ -1210,6 +1232,71 @@ function useOnlineStatus() {
 }
 
 // ── Banner status offline / sinkronisasi ───────────────────────
+// ── Banner instruksi install manual untuk iOS ──────────────────
+// iOS Safari TIDAK PERNAH menampilkan prompt install otomatis (tidak
+// support event beforeinstallprompt). Satu-satunya cara adalah edukasi
+// user untuk melakukan gesture manual: Share -> Add to Home Screen.
+function isIOSDevice() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+}
+function isInStandaloneMode() {
+  return window.navigator.standalone === true
+    || window.matchMedia("(display-mode: standalone)").matches;
+}
+function isInAppBrowser() {
+  const ua = navigator.userAgent || "";
+  // Instagram, Facebook, TikTok, dsb membuka link lewat in-app browser yang
+  // TIDAK punya opsi "Add to Home Screen" sama sekali — user harus buka di Safari asli.
+  return /FBAN|FBAV|Instagram|Line\/|TikTok|MicroMessenger/i.test(ua);
+}
+
+function IOSInstallBanner() {
+  const { dark } = useTheme();
+  const t = tokens(dark);
+  const [dismissed, setDismissed] = useState(() => sessionStorage.getItem("ios_install_dismissed") === "1");
+
+  const isIOS = isIOSDevice();
+  const standalone = isInStandaloneMode();
+  const inAppBrowser = isInAppBrowser();
+
+  if (!isIOS || standalone || dismissed) return null;
+
+  const handleDismiss = () => {
+    sessionStorage.setItem("ios_install_dismissed", "1");
+    setDismissed(true);
+  };
+
+  return (
+    <div style={{
+      background: dark ? "rgba(212,160,23,0.1)" : "rgba(184,134,11,0.06)",
+      border:`1px solid ${t.gold}`, borderRadius:10, padding:"14px 16px", marginBottom:16,
+      fontSize:12.5, color:t.text, lineHeight:1.7,
+    }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:10 }}>
+        <div style={{ flex:1 }}>
+          {inAppBrowser ? (
+            <>
+              <strong style={{ color:t.gold }}>⚠️ Buka di Safari untuk install</strong><br/>
+              Kamu sedang membuka lewat browser dalam-aplikasi (Instagram/WhatsApp/dll) — opsi "Add to Home Screen" tidak tersedia di sini.
+              Tap ikon <strong>⋯</strong> atau <strong>Share</strong> lalu pilih <strong>"Open in Safari"</strong>, baru lanjutkan langkah install dari sana.
+            </>
+          ) : (
+            <>
+              <strong style={{ color:t.gold }}>📲 Install ke Home Screen</strong><br/>
+              1. Tap ikon <strong>Share</strong> (kotak dengan panah ke atas) di toolbar Safari<br/>
+              2. Scroll, tap <strong>"Add to Home Screen"</strong><br/>
+              3. Tap <strong>"Add"</strong> di kanan atas
+            </>
+          )}
+        </div>
+        <button className="btn-press" onClick={handleDismiss} style={{
+          background:"transparent", border:"none", color:t.textMuted, fontSize:16, cursor:"pointer", flexShrink:0, padding:0,
+        }}>✕</button>
+      </div>
+    </div>
+  );
+}
+
 function OfflineBanner({ online, pendingCount, syncing }) {
   const { dark } = useTheme();
   const t = tokens(dark);
@@ -1359,7 +1446,8 @@ function AuthScreen({ onAuth }) {
       const { email: savedEmail, password: savedPw } = await bukaBiometric();
       await loginKeSupabase(savedEmail, savedPw);
     } catch (e) {
-      setErr(e.message?.includes("belum ada") ? e.message : "Verifikasi biometric gagal atau dibatalkan");
+      console.error("Biometric unlock error:", e);
+      setErr(e.message || "Verifikasi biometric gagal atau dibatalkan");
     }
     setBiometricLoading(false);
   };
@@ -1369,8 +1457,9 @@ function AuthScreen({ onAuth }) {
     try {
       await daftarkanBiometric(pendingCreds.email, pendingCreds.password);
       setShowSetupPrompt(false);
-    } catch {
-      setErr("Gagal mendaftarkan biometric. Kamu tetap sudah login normal.");
+    } catch (e) {
+      console.error("Biometric setup error:", e);
+      setErr(e.message || "Gagal mendaftarkan biometric. Kamu tetap sudah login normal.");
       setShowSetupPrompt(false);
     }
   };
@@ -1458,6 +1547,8 @@ function AuthScreen({ onAuth }) {
               {mode === "login" ? "Masuk untuk melanjutkan pencatatan" : "Mulai catat keuangan kamu hari ini"}
             </div>
           </div>
+
+          <IOSInstallBanner />
 
           {/* Tombol Biometric Unlock — muncul kalau device support & sudah pernah didaftarkan */}
           {mode === "login" && biometricTersedia && (
@@ -2516,8 +2607,9 @@ export default function App() {
         await daftarkanBiometric(email, pw);
         setBiometricAktif(true);
         showToast("✓ Kunci cepat diaktifkan");
-      } catch {
-        showToast("Gagal mengaktifkan kunci cepat", "error");
+      } catch (e) {
+        console.error("Toggle biometric error:", e);
+        showToast(e.message || "Gagal mengaktifkan kunci cepat", "error");
       }
     }
   };
@@ -2797,6 +2889,7 @@ export default function App() {
           {/* Content body */}
           <div style={{ padding:"28px 32px 100px", maxWidth:920 }}>
 
+            <IOSInstallBanner />
             <OfflineBanner online={online} pendingCount={pendingSync} syncing={syncing} />
 
             {/* Form */}
