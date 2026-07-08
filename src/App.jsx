@@ -13,7 +13,8 @@ import {
 const SUPABASE_URL      = import.meta.env.VITE_SUPABASE_URL;
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const GEMINI_API_KEY    = import.meta.env.VITE_GEMINI_API_KEY;
-const BACKEND_URL       = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
+// Catatan: VITE_BACKEND_URL tidak lagi dipakai — prediksi kini 100% frontend
+// (regresi linear + moving average), tidak butuh backend Python sama sekali.
 
 // ── Supabase helper ──────────────────────────────────────────
 // ── Helper: Ambil user_id dari JWT token (payload tengah base64) ──
@@ -420,10 +421,12 @@ function GlobalStyles({ dark }) {
       @media (max-width: 640px) {
         .desktop-sidebar { display: none !important; }
         .mobile-bottomnav { display: flex !important; }
+        .mobile-topbar { display: flex !important; }
         .main-content-area { padding-bottom: 84px !important; margin-left: 0 !important; }
       }
       @media (min-width: 641px) {
         .mobile-bottomnav { display: none !important; }
+        .mobile-topbar { display: none !important; }
       }
       * { -webkit-tap-highlight-color: transparent; }
       body { transition: background 0.3s, color 0.3s; }
@@ -1385,15 +1388,18 @@ function AuthScreen({ onAuth }) {
   const [pw, setPw] = useState("");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
-  const [biometricTersedia, setBiometricTersedia] = useState(false);
+  const [webAuthnDidukung, setWebAuthnDidukung] = useState(false);
+  const [biometricSudahTerdaftar, setBiometricSudahTerdaftar] = useState(() => isBiometricTerdaftar());
   const [biometricLoading, setBiometricLoading] = useState(false);
-  const [showSetupPrompt, setShowSetupPrompt] = useState(false);
-  const [pendingCreds, setPendingCreds] = useState(null); // { email, password } menunggu ditawarkan setup biometric
 
   useEffect(() => {
     (async () => {
+      // Cek dukungan device SEKALI di awal — TIDAK digabung dengan status terdaftar,
+      // supaya tombol tetap muncul walau belum pernah setup (baru inilah bug lamanya:
+      // tombol cuma muncul kalau sudah terdaftar, jadi user tidak pernah punya jalan
+      // untuk trigger setup dari layar login).
       const supported = await isBiometricAvailableOnDevice();
-      setBiometricTersedia(supported && isBiometricTerdaftar());
+      setWebAuthnDidukung(supported);
     })();
   }, []);
 
@@ -1416,15 +1422,7 @@ function AuthScreen({ onAuth }) {
     setErr(""); setLoading(true);
     try {
       if (mode === "login") {
-        const sukses = await loginKeSupabase(email, pw);
-        // Tawarkan setup biometric kalau berhasil login manual & device mendukung, & belum pernah didaftarkan
-        if (sukses) {
-          const supported = await isBiometricAvailableOnDevice();
-          if (supported && !isBiometricTerdaftar()) {
-            setPendingCreds({ email, password: pw });
-            setShowSetupPrompt(true);
-          }
-        }
+        await loginKeSupabase(email, pw);
       } else {
         const res = await sb.signUp(email, pw);
         if (res.access_token) {
@@ -1440,57 +1438,53 @@ function AuthScreen({ onAuth }) {
     setLoading(false);
   };
 
-  const handleBukaBiometric = async () => {
+  // Tombol biometric: kalau SUDAH terdaftar -> langsung verifikasi & login.
+  // Kalau BELUM terdaftar -> minta email+password dulu (via prompt sederhana),
+  // lalu jalankan setup. Ini yang membuat tombol selalu actionable, tidak lagi
+  // bergantung pada "sudah pernah setup sebelumnya".
+  const handleTombolBiometric = async () => {
     setErr(""); setBiometricLoading(true);
     try {
-      const { email: savedEmail, password: savedPw } = await bukaBiometric();
-      await loginKeSupabase(savedEmail, savedPw);
+      if (biometricSudahTerdaftar) {
+        const { email: savedEmail, password: savedPw } = await bukaBiometric();
+        await loginKeSupabase(savedEmail, savedPw);
+      } else {
+        // Perlu email+password valid dulu untuk registrasi WebAuthn.
+        // Kalau field email/password di form sudah diisi, pakai itu langsung;
+        // kalau belum, minta lewat prompt supaya tetap bisa jalan dari mode "register" juga.
+        let regEmail = email, regPw = pw;
+        if (!regEmail) regEmail = window.prompt("Masukkan email kamu untuk setup Face ID/Sidik Jari:") || "";
+        if (!regEmail) { setBiometricLoading(false); return; }
+        if (!regPw) regPw = window.prompt("Masukkan password akun kamu:") || "";
+        if (!regPw) { setBiometricLoading(false); return; }
+
+        // Verifikasi dulu ke Supabase (memastikan email+password memang valid)
+        // SEBELUM daftarkan biometric — supaya tidak menyimpan kredensial yang salah.
+        const res = await sb.signIn(regEmail, regPw);
+        if (!res.access_token) {
+          setErr(res.error_description || "Email atau password salah — tidak bisa setup biometric");
+          setBiometricLoading(false);
+          return;
+        }
+
+        await daftarkanBiometric(regEmail, regPw);
+        setBiometricSudahTerdaftar(true);
+
+        // Langsung lanjutkan login dengan token yang sudah didapat, tidak perlu login 2x
+        localStorage.setItem("sb_token", res.access_token);
+        localStorage.setItem("sb_refresh_token", res.refresh_token || "");
+        const expiresAt = Date.now() + (res.expires_in ? res.expires_in * 1000 : 3600 * 1000);
+        localStorage.setItem("sb_expires_at", String(expiresAt));
+        localStorage.setItem("sb_email", regEmail);
+        onAuth(res.access_token, regEmail);
+      }
     } catch (e) {
-      console.error("Biometric unlock error:", e);
+      console.error("Biometric button error:", e);
       setErr(e.message || "Verifikasi biometric gagal atau dibatalkan");
     }
     setBiometricLoading(false);
   };
 
-  const handleSetupBiometric = async () => {
-    if (!pendingCreds) return;
-    try {
-      await daftarkanBiometric(pendingCreds.email, pendingCreds.password);
-      setShowSetupPrompt(false);
-    } catch (e) {
-      console.error("Biometric setup error:", e);
-      setErr(e.message || "Gagal mendaftarkan biometric. Kamu tetap sudah login normal.");
-      setShowSetupPrompt(false);
-    }
-  };
-
-  // ── Prompt setup biometric (muncul overlay setelah login manual sukses) ──
-  if (showSetupPrompt) {
-    return (
-      <div style={{ minHeight:"100vh", display:"flex", alignItems:"center", justifyContent:"center", background:t.bg, padding:24 }}>
-        <div className="card-enter" style={{ background:t.surface, borderRadius:16, padding:32, maxWidth:360, width:"100%", textAlign:"center", boxShadow:t.cardShadow, border:`1px solid ${t.borderSoft}` }}>
-          <div style={{
-            width:64, height:64, borderRadius:16, margin:"0 auto 20px",
-            background:`linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`,
-            display:"flex", alignItems:"center", justifyContent:"center", fontSize:30,
-          }}>👆</div>
-          <div style={{ fontFamily:t.fontDisplay, fontWeight:600, fontSize:19, color:t.text, marginBottom:8 }}>Aktifkan Kunci Cepat?</div>
-          <div style={{ fontSize:13.5, color:t.textMuted, lineHeight:1.7, marginBottom:24 }}>
-            Gunakan Face ID, sidik jari, atau Windows Hello untuk masuk lebih cepat lain kali — tanpa ketik ulang password.
-          </div>
-          <button className="btn-press" onClick={handleSetupBiometric} style={{
-            width:"100%", padding:13, borderRadius:9, border:"none", marginBottom:10,
-            background:`linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`, color:"#181820",
-            fontWeight:700, fontSize:14, cursor:"pointer",
-          }}>Aktifkan Sekarang</button>
-          <button className="btn-press" onClick={()=>setShowSetupPrompt(false)} style={{
-            width:"100%", padding:12, borderRadius:9, border:`1.5px solid ${t.border}`,
-            background:"transparent", color:t.textMuted, fontWeight:600, fontSize:13.5, cursor:"pointer",
-          }}>Nanti Saja</button>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div style={{ minHeight:"100vh", display:"flex", flexWrap:"wrap", background:t.bg }}>
@@ -1550,25 +1544,6 @@ function AuthScreen({ onAuth }) {
 
           <IOSInstallBanner />
 
-          {/* Tombol Biometric Unlock — muncul kalau device support & sudah pernah didaftarkan */}
-          {mode === "login" && biometricTersedia && (
-            <>
-              <button className="btn-press ripple-container" onMouseDown={createRipple} onClick={handleBukaBiometric} disabled={biometricLoading} style={{
-                width:"100%", padding:13, borderRadius:9, border:`1.5px solid ${t.gold}`, marginBottom:14,
-                background: dark ? "rgba(212,160,23,0.1)" : "rgba(184,134,11,0.06)", color:t.gold,
-                fontWeight:700, fontSize:14, cursor:biometricLoading?"not-allowed":"pointer",
-                display:"flex", alignItems:"center", justifyContent:"center", gap:8,
-              }}>
-                <span style={{ fontSize:18 }}>👆</span> {biometricLoading ? "Memverifikasi..." : "Buka dengan Face ID / Sidik Jari"}
-              </button>
-              <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:14 }}>
-                <div style={{ flex:1, height:1, background:t.border }} />
-                <span style={{ fontSize:11, color:t.textMuted, textTransform:"uppercase", letterSpacing:"0.04em" }}>atau</span>
-                <div style={{ flex:1, height:1, background:t.border }} />
-              </div>
-            </>
-          )}
-
           <div style={{ display:"flex", background:t.surface2, borderRadius:9, padding:4, marginBottom:22 }}>
             {["login","register"].map(m => <button key={m} className="btn-press" onClick={()=>{setMode(m);setErr("");}} style={{ flex:1, padding:"9px", borderRadius:6, border:"none", background:mode===m?t.surface:"transparent", color:mode===m?t.text:t.textMuted, fontWeight:600, fontSize:13, cursor:"pointer", boxShadow: mode===m ? t.cardShadow : "none" }}>{m==="login"?"Masuk":"Daftar"}</button>)}
           </div>
@@ -1583,13 +1558,41 @@ function AuthScreen({ onAuth }) {
             <label style={{ fontSize:12, fontWeight:600, color:t.textSub, marginBottom:6, display:"block" }}>Kata sandi</label>
             <input type="password" placeholder="••••••••" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handle()} style={inp} />
           </div>
-          <button className="btn-press ripple-container" onMouseDown={createRipple} onClick={handle} disabled={loading} style={{
-            width:"100%", padding:13, borderRadius:9, border:"none",
-            background: loading ? t.textMuted : `linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`,
-            color:"#181820", fontWeight:700, fontSize:14.5, cursor:loading?"not-allowed":"pointer",
-          }}>
-            {loading?"Memproses...":mode==="login"?"Masuk":"Buat Akun"}
-          </button>
+
+          {/* Tombol Masuk + tombol Biometric di sebelahnya.
+              Tombol biometric SELALU tampil kalau device mendukung WebAuthn —
+              tidak lagi menunggu "sudah pernah setup", supaya user selalu punya
+              jalan untuk mengaktifkan biometric langsung dari sini. */}
+          <div style={{ display:"flex", gap:8 }}>
+            <button className="btn-press ripple-container" onMouseDown={createRipple} onClick={handle} disabled={loading} style={{
+              flex:1, padding:13, borderRadius:9, border:"none",
+              background: loading ? t.textMuted : `linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`,
+              color:"#181820", fontWeight:700, fontSize:14.5, cursor:loading?"not-allowed":"pointer",
+            }}>
+              {loading?"Memproses...":mode==="login"?"Masuk":"Buat Akun"}
+            </button>
+
+            {webAuthnDidukung && (
+              <button
+                className="btn-press ripple-container" onMouseDown={createRipple}
+                onClick={handleTombolBiometric} disabled={biometricLoading}
+                title={biometricSudahTerdaftar ? "Masuk dengan Face ID / Sidik Jari" : "Setup Face ID / Sidik Jari"}
+                style={{
+                  flex:"0 0 52px", borderRadius:9, border:`1.5px solid ${t.gold}`,
+                  background: dark ? "rgba(212,160,23,0.1)" : "rgba(184,134,11,0.06)",
+                  color:t.gold, fontSize:20, cursor:biometricLoading?"not-allowed":"pointer",
+                  display:"flex", alignItems:"center", justifyContent:"center",
+                }}>
+                {biometricLoading ? "⋯" : "👆"}
+              </button>
+            )}
+          </div>
+
+          {webAuthnDidukung && !biometricSudahTerdaftar && (
+            <div style={{ fontSize:11.5, color:t.textMuted, textAlign:"center", marginTop:10 }}>
+              Tap ikon 👆 untuk setup Face ID / Sidik Jari
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -2150,6 +2153,112 @@ function TabBudget({ transaksi, token, showToast }) {
 }
 
 
+// ── Helper: Statistik prediksi murni JavaScript (tanpa backend) ──
+// Menggantikan model Hybrid ARIMA-LSTM (yang butuh Python/TensorFlow) dengan
+// kombinasi Regresi Linear + Moving Average — dihitung instan di browser.
+// Trade-off: lebih sederhana secara statistik, tapi cukup untuk gambaran tren
+// personal dan tidak butuh server sama sekali.
+
+// Regresi linear sederhana (least squares) — cari garis tren y = a + bx
+function regresiLinear(nilaiPerBulan) {
+  const n = nilaiPerBulan.length;
+  if (n < 2) return { a: nilaiPerBulan[0] || 0, b: 0 };
+
+  const xs = nilaiPerBulan.map((_, i) => i);
+  const sumX = xs.reduce((s, x) => s + x, 0);
+  const sumY = nilaiPerBulan.reduce((s, y) => s + y, 0);
+  const sumXY = xs.reduce((s, x, i) => s + x * nilaiPerBulan[i], 0);
+  const sumX2 = xs.reduce((s, x) => s + x * x, 0);
+
+  const b = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX || 1);
+  const a = (sumY - b * sumX) / n;
+  return { a, b };
+}
+
+// Moving average sederhana — rata-rata beberapa bulan terakhir sebagai baseline
+function movingAverage(nilaiPerBulan, window = 3) {
+  const slice = nilaiPerBulan.slice(-window);
+  if (slice.length === 0) return 0;
+  return slice.reduce((s, v) => s + v, 0) / slice.length;
+}
+
+// Hitung MAPE (Mean Absolute Percentage Error) sederhana untuk estimasi akurasi
+function hitungAkurasi(aktual, prediksi) {
+  const pasangan = aktual.map((a, i) => [a, prediksi[i]]).filter(([a]) => a !== 0);
+  if (pasangan.length === 0) return 75;
+  const mape = pasangan.reduce((s, [a, p]) => s + Math.abs((a - p) / a), 0) / pasangan.length;
+  return Math.max(0, Math.min(100, Math.round((1 - mape) * 100)));
+}
+
+// Fungsi utama: hitung proyeksi N bulan ke depan dari histori transaksi
+function hitungProyeksiFrontend(transaksi, nBulan) {
+  const perBulan = {};
+  transaksi.filter(t => t.tipe === "pengeluaran").forEach(t => {
+    const d = new Date(t.tanggal);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    perBulan[key] = (perBulan[key] || 0) + t.jumlah;
+  });
+
+  const bulanKeys = Object.keys(perBulan).sort();
+  if (bulanKeys.length < 3) {
+    throw new Error("Butuh minimal 3 bulan data pengeluaran untuk membuat proyeksi.");
+  }
+
+  const nilaiHistoris = bulanKeys.map(k => perBulan[k]);
+
+  const { a, b } = regresiLinear(nilaiHistoris);
+  const prediksiLinear = Array.from({ length: nBulan }, (_, i) => Math.max(0, a + b * (nilaiHistoris.length + i)));
+
+  const rataRata = movingAverage(nilaiHistoris, Math.min(3, nilaiHistoris.length));
+  const prediksiMA = Array.from({ length: nBulan }, () => rataRata);
+
+  const prediksiGabungan = prediksiLinear.map((pl, i) => {
+    const bobotTren = Math.max(0.3, 0.7 - i * 0.15);
+    return Math.max(0, pl * bobotTren + prediksiMA[i] * (1 - bobotTren));
+  });
+
+  let akurasiLinear = 75, akurasiGabungan = 80;
+  if (nilaiHistoris.length >= 5) {
+    const train = nilaiHistoris.slice(0, -2);
+    const testAktual = nilaiHistoris.slice(-2);
+    const { a: a2, b: b2 } = regresiLinear(train);
+    const testPrediksiLinear = testAktual.map((_, i) => Math.max(0, a2 + b2 * (train.length + i)));
+    const rataTrain = movingAverage(train, Math.min(3, train.length));
+    const testPrediksiGabungan = testPrediksiLinear.map(pl => pl * 0.55 + rataTrain * 0.45);
+
+    akurasiLinear = hitungAkurasi(testAktual, testPrediksiLinear);
+    akurasiGabungan = hitungAkurasi(testAktual, testPrediksiGabungan);
+  }
+
+  const [lastYear, lastMonth] = bulanKeys[bulanKeys.length - 1].split("-").map(Number);
+  const labelBulan = Array.from({ length: nBulan }, (_, i) => {
+    const totalBulan = lastMonth - 1 + i + 1;
+    const tahunBaru = lastYear + Math.floor(totalBulan / 12);
+    const bulanBaru = totalBulan % 12;
+    return `${BULAN_ID[bulanBaru]} ${tahunBaru}`;
+  });
+
+  const rataHistoris = nilaiHistoris.reduce((s, v) => s + v, 0) / nilaiHistoris.length;
+  const rataPrediksi = prediksiGabungan.reduce((s, v) => s + v, 0) / prediksiGabungan.length;
+  const tren = rataPrediksi > rataHistoris ? "naik" : "turun";
+  const persenPerubahan = rataHistoris !== 0 ? Math.abs((rataPrediksi - rataHistoris) / rataHistoris * 100) : 0;
+  const bulanTertinggiIdx = nilaiHistoris.indexOf(Math.max(...nilaiHistoris));
+  const [thTertinggi, blnTertinggi] = bulanKeys[bulanTertinggiIdx].split("-").map(Number);
+
+  const insight = `Berdasarkan analisis tren dari ${nilaiHistoris.length} bulan data, pengeluaran diproyeksikan ${tren} sekitar ${persenPerubahan.toFixed(1)}% dibanding rata-rata historis (${formatRp(rataHistoris)}/bulan). Pengeluaran tertinggi tercatat pada ${BULAN_ID[blnTertinggi-1]} ${thTertinggi}. Proyeksi rata-rata untuk periode ke depan: ${formatRp(rataPrediksi)}/bulan.`;
+
+  return {
+    bulan: labelBulan,
+    prediksi_linear: prediksiLinear.map(v => Math.round(v)),
+    prediksi_ma: prediksiMA.map(v => Math.round(v)),
+    prediksi_gabungan: prediksiGabungan.map(v => Math.round(v)),
+    akurasi_linear: akurasiLinear,
+    akurasi_gabungan: akurasiGabungan,
+    insight,
+  };
+}
+
+// ── Tab Prediksi (100% Frontend — tanpa backend) ───────────────
 function TabPrediksi({ transaksi }) {
   const { dark } = useTheme();
   const t = tokens(dark);
@@ -2159,31 +2268,18 @@ function TabPrediksi({ transaksi }) {
   const [err, setErr] = useState("");
   const [nBulan, setNBulan] = useState(3);
 
-  const jalankanPrediksi = async () => {
+  const jalankanPrediksi = () => {
     setLoading(true); setErr(""); setResult(null);
-    try {
-      const res = await fetch(`${BACKEND_URL}/prediksi`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transaksi, bulan_prediksi: nBulan }),
-      });
-      if (!res.ok) {
-        const e = await res.json();
-        throw new Error(e.detail || "Gagal menjalankan prediksi");
+    setTimeout(() => {
+      try {
+        const hasil = hitungProyeksiFrontend(transaksi, nBulan);
+        setResult(hasil);
+      } catch (e) {
+        setErr(e.message);
       }
-      setResult(await res.json());
-    } catch (e) { setErr(e.message); }
-    setLoading(false);
+      setLoading(false);
+    }, 400);
   };
-
-  const dataGrafik = result
-    ? result.bulan.map((b, i) => ({
-        bulan: b,
-        ARIMA: result.prediksi_arima[i],
-        LSTM: result.prediksi_lstm[i],
-        Hybrid: result.prediksi_hybrid[i],
-      }))
-    : [];
 
   const customTooltip = ({ active, payload, label }) => {
     if (!active || !payload?.length) return null;
@@ -2199,14 +2295,22 @@ function TabPrediksi({ transaksi }) {
   const axisColor = dark ? "#6E6B62" : "#8C8879";
   const cardTitle = { fontFamily:t.fontDisplay, fontWeight:600, fontSize:15.5, color:t.text, marginBottom:14 };
 
+  const dataGrafik = result
+    ? result.bulan.map((b, i) => ({
+        bulan: b,
+        Tren: result.prediksi_linear[i],
+        "Rata-rata": result.prediksi_ma[i],
+        Gabungan: result.prediksi_gabungan[i],
+      }))
+    : [];
+
   return (
     <div>
       {/* Panel Kontrol */}
       <div style={{ background:t.surface, borderRadius:12, padding:22, marginBottom:16, boxShadow:t.cardShadow, border:`1px solid ${t.borderSoft}` }}>
-        <div style={cardTitle}>Proyeksi Hybrid ARIMA-LSTM</div>
+        <div style={cardTitle}>Proyeksi Pengeluaran</div>
         <div style={{ fontSize:12.5, color:t.textMuted, marginBottom:18, lineHeight:1.65 }}>
-          Model ARIMA menangkap pola linear, lalu residualnya diproses LSTM untuk pola non-linear.
-          Hasilnya digabungkan menjadi proyeksi yang lebih akurat.
+          Dihitung langsung di browser kamu memakai regresi linear dan rata-rata bergerak — tanpa server, hasil instan.
         </div>
         <div style={{ display:"flex", gap:8, alignItems:"center" }}>
           <select value={nBulan} onChange={e=>setNBulan(Number(e.target.value))} style={{ ...inp, flex:1 }}>
@@ -2214,24 +2318,23 @@ function TabPrediksi({ transaksi }) {
             <option value={3}>3 bulan ke depan</option>
             <option value={6}>6 bulan ke depan</option>
           </select>
-          <button className="btn-press" onClick={jalankanPrediksi} disabled={loading || transaksi.length < 3} style={{
+          <button className="btn-press ripple-container" onMouseDown={createRipple} onClick={jalankanPrediksi} disabled={loading || transaksi.length < 3} style={{
             padding:"11px 22px", borderRadius:9, border:"none",
             background: (loading||transaksi.length<3) ? t.surface2 : `linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`,
             color:(loading||transaksi.length<3) ? t.textMuted : "#181820", fontWeight:700, fontSize:13, cursor:(loading||transaksi.length<3)?"not-allowed":"pointer", whiteSpace:"nowrap",
           }}>
-            {loading ? "Memproses..." : "Jalankan"}
+            {loading ? "Menghitung..." : "Jalankan"}
           </button>
         </div>
         {transaksi.length < 3 && (
-          <div style={{ fontSize:12, color:t.gold, marginTop:10 }}>Butuh minimal 3 transaksi untuk menjalankan proyeksi</div>
+          <div style={{ fontSize:12, color:t.gold, marginTop:10 }}>Butuh minimal 3 transaksi pengeluaran untuk menjalankan proyeksi</div>
         )}
       </div>
 
       {/* Error */}
       {err && (
         <div style={{ background: dark?"rgba(184,69,69,0.12)":"rgba(140,47,47,0.06)", color:t.red, padding:"13px 16px", borderRadius:10, fontSize:13, marginBottom:16, border:`1px solid ${dark?"rgba(184,69,69,0.25)":"rgba(140,47,47,0.15)"}` }}>
-          {err}<br/>
-          <span style={{ fontSize:11.5, opacity:0.75 }}>Pastikan backend Python sudah berjalan di {BACKEND_URL}</span>
+          {err}
         </div>
       )}
 
@@ -2241,8 +2344,8 @@ function TabPrediksi({ transaksi }) {
           {/* Akurasi */}
           <div style={{ display:"flex", gap:12, marginBottom:16 }}>
             {[
-              { label:"Akurasi ARIMA", val:`${result.akurasi_arima}%` },
-              { label:"Akurasi Hybrid", val:`${result.akurasi_hybrid}%` },
+              { label:"Akurasi Tren Linear", val:`${result.akurasi_linear}%` },
+              { label:"Akurasi Gabungan", val:`${result.akurasi_gabungan}%` },
             ].map((item, i) => (
               <div key={i} style={{ flex:1, background:t.surface, borderRadius:12, padding:"16px 18px", boxShadow:t.cardShadow, border:`1px solid ${t.borderSoft}` }}>
                 <div className="num-tabular" style={{ fontFamily:t.fontMono, fontSize:25, fontWeight:800, color:t.gold }}>{item.val}</div>
@@ -2261,9 +2364,9 @@ function TabPrediksi({ transaksi }) {
                 <YAxis tickFormatter={v=>`${(v/1000000).toFixed(1)}jt`} tick={{ fontSize:10, fill:axisColor, fontFamily:t.fontMono }} axisLine={false} tickLine={false} />
                 <Tooltip content={customTooltip} />
                 <Legend wrapperStyle={{ fontSize:12, color:t.text, paddingTop:8 }} iconType="circle" iconSize={8} />
-                <Line type="monotone" dataKey="ARIMA" stroke={dark?"#6E6B62":"#A19E93"} strokeWidth={1.75} dot={{ r:3.5 }} />
-                <Line type="monotone" dataKey="LSTM" stroke={t.green} strokeWidth={1.75} dot={{ r:3.5 }} />
-                <Line type="monotone" dataKey="Hybrid" stroke={t.gold} strokeWidth={3} dot={{ r:5 }} />
+                <Line type="monotone" dataKey="Tren" stroke={dark?"#6E6B62":"#A19E93"} strokeWidth={1.75} dot={{ r:3.5 }} />
+                <Line type="monotone" dataKey="Rata-rata" stroke={t.green} strokeWidth={1.75} dot={{ r:3.5 }} />
+                <Line type="monotone" dataKey="Gabungan" stroke={t.gold} strokeWidth={3} dot={{ r:5 }} />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -2275,7 +2378,7 @@ function TabPrediksi({ transaksi }) {
               <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5 }}>
                 <thead>
                   <tr style={{ background:t.surface2 }}>
-                    {["Bulan","ARIMA","LSTM","Hybrid*"].map(h => (
+                    {["Bulan","Tren Linear","Rata-rata","Gabungan*"].map(h => (
                       <th key={h} style={{ padding:"9px 11px", textAlign:"left", fontWeight:700, color:t.textSub, borderBottom:`1px solid ${t.border}`, fontFamily:t.fontBody }}>{h}</th>
                     ))}
                   </tr>
@@ -2284,14 +2387,14 @@ function TabPrediksi({ transaksi }) {
                   {result.bulan.map((b, i) => (
                     <tr key={i} style={{ borderBottom:`1px solid ${t.borderSoft}` }}>
                       <td style={{ padding:"9px 11px", fontWeight:600, color:t.text }}>{b}</td>
-                      <td className="num-tabular" style={{ padding:"9px 11px", color:t.textSub, fontFamily:t.fontMono }}>{formatRp(result.prediksi_arima[i])}</td>
-                      <td className="num-tabular" style={{ padding:"9px 11px", color:t.green, fontFamily:t.fontMono }}>{formatRp(result.prediksi_lstm[i])}</td>
-                      <td className="num-tabular" style={{ padding:"9px 11px", color:t.gold, fontWeight:700, fontFamily:t.fontMono }}>{formatRp(result.prediksi_hybrid[i])}</td>
+                      <td className="num-tabular" style={{ padding:"9px 11px", color:t.textSub, fontFamily:t.fontMono }}>{formatRp(result.prediksi_linear[i])}</td>
+                      <td className="num-tabular" style={{ padding:"9px 11px", color:t.green, fontFamily:t.fontMono }}>{formatRp(result.prediksi_ma[i])}</td>
+                      <td className="num-tabular" style={{ padding:"9px 11px", color:t.gold, fontWeight:700, fontFamily:t.fontMono }}>{formatRp(result.prediksi_gabungan[i])}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-              <div style={{ fontSize:11, color:t.textMuted, marginTop:10 }}>* Hybrid = ARIMA + residual LSTM (rekomendasi)</div>
+              <div style={{ fontSize:11, color:t.textMuted, marginTop:10 }}>* Gabungan = kombinasi tren linear + rata-rata bergerak (rekomendasi)</div>
             </div>
           </div>
 
@@ -2299,6 +2402,10 @@ function TabPrediksi({ transaksi }) {
           <div style={{ background: dark?"rgba(212,160,23,0.08)":"rgba(184,134,11,0.05)", borderRadius:12, padding:20, border:`1px solid ${dark?"rgba(212,160,23,0.2)":"rgba(184,134,11,0.15)"}` }}>
             <div style={{ fontFamily:t.fontDisplay, fontWeight:600, fontSize:14, color:t.gold, marginBottom:8 }}>Wawasan Otomatis</div>
             <div style={{ fontSize:13, color:t.text, lineHeight:1.75 }}>{result.insight}</div>
+          </div>
+
+          <div style={{ fontSize:11, color:t.textMuted, textAlign:"center", marginTop:14 }}>
+            Dihitung 100% di browser kamu — tidak ada data yang dikirim ke server manapun untuk proyeksi ini.
           </div>
         </>
       )}
@@ -2843,6 +2950,31 @@ export default function App() {
         {/* ══════════ MAIN CONTENT ══════════ */}
         <div className="main-content-area" style={{ marginLeft:236, minHeight:"100vh" }}>
 
+          {/* Mobile-only top bar — sidebar disembunyikan di layar sempit, jadi
+              tombol Keluar & Dark Toggle perlu tempat baru di sini supaya tetap
+              bisa diakses dari HP (sebelumnya cuma ada di sidebar desktop). */}
+          <div className="mobile-topbar" style={{
+            display:"none", alignItems:"center", justifyContent:"space-between",
+            padding:"14px 20px", background:th.sidebarBg, borderBottom:"1px solid rgba(255,255,255,0.08)",
+          }}>
+            <div style={{ display:"flex", alignItems:"center", gap:9 }}>
+              <div style={{
+                width:28, height:28, borderRadius:7, flexShrink:0,
+                background:`linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`,
+                display:"flex", alignItems:"center", justifyContent:"center",
+                fontFamily:th.fontDisplay, fontWeight:700, fontSize:14, color:"#181820",
+              }}>D</div>
+              <div style={{ fontFamily:th.fontDisplay, fontWeight:600, fontSize:14.5, color:"#FDFCF8" }}>Dompet Saya</div>
+            </div>
+            <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+              <DarkToggle dark={dark} onToggle={toggleDark} />
+              <button className="btn-press" onClick={handleLogout} style={{
+                background:"rgba(255,255,255,0.08)", border:"1px solid rgba(255,255,255,0.12)",
+                borderRadius:7, padding:"6px 12px", color:"#B8B5C4", fontWeight:600, fontSize:11.5, cursor:"pointer",
+              }}>Keluar</button>
+            </div>
+          </div>
+
           {/* Top bar: saldo ledger-style + tombol tambah */}
           <div className="shine-sweep" style={{
             background: dark
@@ -2881,9 +3013,6 @@ export default function App() {
                 <span style={{ fontSize:16, lineHeight:1 }}>+</span> Catat Transaksi
               </button>
             </div>
-
-            {/* Mobile-only page title (sidebar hidden) */}
-            <div className="mobile-bottomnav" style={{ display:"none" }} />
           </div>
 
           {/* Content body */}
