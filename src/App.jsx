@@ -2259,6 +2259,251 @@ function hitungProyeksiFrontend(transaksi, nBulan) {
 }
 
 // ── Tab Prediksi (100% Frontend — tanpa backend) ───────────────
+// ── Helper: Financial Health Score (dihitung 100% di frontend) ──
+// Skor 0-100 dari 5 komponen, masing-masing maksimal 20 poin.
+// Semua dihitung dari data transaksi & budget yang sudah ada, tanpa API call.
+
+function hitungSkorTabungan(transaksi) {
+  const masuk = transaksi.filter(t => t.tipe === "pemasukan").reduce((s, t) => s + t.jumlah, 0);
+  const keluar = transaksi.filter(t => t.tipe === "pengeluaran").reduce((s, t) => s + t.jumlah, 0);
+  if (masuk === 0) return { skor: 0, rasio: 0 };
+
+  const rasioTabungan = (masuk - keluar) / masuk; // bisa negatif kalau defisit
+  // Skala: rasio >= 20% dianggap sangat sehat (skor penuh), <0% (defisit) skor 0
+  const skor = Math.max(0, Math.min(20, Math.round((rasioTabungan / 0.2) * 20)));
+  return { skor, rasio: rasioTabungan };
+}
+
+function hitungSkorKonsistensiBudget(budgets, transaksi, bulan, tahun) {
+  if (!budgets || budgets.length === 0) return { skor: 10, keterangan: "Belum ada anggaran diset" }; // netral kalau belum pakai fitur budget
+
+  const pengeluaranPerKategori = {};
+  transaksi.filter(t => {
+    const d = new Date(t.tanggal);
+    return t.tipe === "pengeluaran" && (d.getMonth() + 1) === bulan && d.getFullYear() === tahun;
+  }).forEach(t => { pengeluaranPerKategori[t.kategori] = (pengeluaranPerKategori[t.kategori] || 0) + t.jumlah; });
+
+  const tidakOver = budgets.filter(b => (pengeluaranPerKategori[b.kategori] || 0) <= b.limit_bulanan).length;
+  const rasioPatuh = tidakOver / budgets.length;
+  return { skor: Math.round(rasioPatuh * 20), keterangan: `${tidakOver}/${budgets.length} kategori dalam anggaran` };
+}
+
+function hitungSkorTrenPengeluaran(transaksi) {
+  const perBulan = {};
+  transaksi.filter(t => t.tipe === "pengeluaran").forEach(t => {
+    const d = new Date(t.tanggal);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    perBulan[key] = (perBulan[key] || 0) + t.jumlah;
+  });
+  const bulanKeys = Object.keys(perBulan).sort();
+  if (bulanKeys.length < 2) return { skor: 10, tren: "belum cukup data" }; // netral
+
+  const nilai = bulanKeys.map(k => perBulan[k]);
+  const { b } = regresiLinear(nilai);
+  const rataRata = nilai.reduce((s, v) => s + v, 0) / nilai.length;
+  const bNormalisasi = rataRata !== 0 ? b / rataRata : 0;
+
+  // Tren menurun/stabil = bagus (skor tinggi), tren naik tajam = kurang bagus
+  let skor;
+  if (bNormalisasi <= 0) skor = 20; // menurun atau stabil sempurna
+  else if (bNormalisasi < 0.05) skor = 15; // naik sedikit, wajar
+  else if (bNormalisasi < 0.15) skor = 10; // naik cukup signifikan
+  else skor = 5; // naik tajam
+
+  return { skor, tren: bNormalisasi <= 0 ? "menurun/stabil" : "meningkat" };
+}
+
+function hitungSkorDiversifikasi(transaksi) {
+  const perKategori = {};
+  let totalPengeluaran = 0;
+  transaksi.filter(t => t.tipe === "pengeluaran").forEach(t => {
+    perKategori[t.kategori] = (perKategori[t.kategori] || 0) + t.jumlah;
+    totalPengeluaran += t.jumlah;
+  });
+  if (totalPengeluaran === 0) return { skor: 10, keterangan: "Belum ada data" };
+
+  // Herfindahl-Hirschman Index sederhana — makin terkonsentrasi di 1 kategori, makin rendah skor
+  const proporsi = Object.values(perKategori).map(v => v / totalPengeluaran);
+  const hhi = proporsi.reduce((s, p) => s + p * p, 0); // 1 = semua di 1 kategori, mendekati 0 = tersebar merata
+  const skor = Math.round((1 - hhi) * 20);
+  return { skor: Math.max(0, skor), keterangan: `${Object.keys(perKategori).length} kategori aktif` };
+}
+
+function hitungSkorKonsistensiCatat(transaksi) {
+  if (transaksi.length === 0) return { skor: 0, keterangan: "Belum ada transaksi" };
+
+  const tanggalUnik = new Set(transaksi.map(t => t.tanggal)).size;
+  const tanggalPertama = new Date(Math.min(...transaksi.map(t => new Date(t.tanggal))));
+  const tanggalTerakhir = new Date(Math.max(...transaksi.map(t => new Date(t.tanggal))));
+  const rentangHari = Math.max(1, Math.round((tanggalTerakhir - tanggalPertama) / (1000 * 60 * 60 * 24)));
+
+  const rasioAktif = Math.min(1, tanggalUnik / Math.min(rentangHari, 30)); // dibatasi 30 hari supaya tidak terlalu ketat untuk histori panjang
+  const skor = Math.round(rasioAktif * 20);
+  return { skor, keterangan: `Aktif ${tanggalUnik} hari berbeda` };
+}
+
+function hitungFinancialHealthScore(transaksi, budgets) {
+  const now = new Date();
+  const tabungan = hitungSkorTabungan(transaksi);
+  const budgetConsistency = hitungSkorKonsistensiBudget(budgets, transaksi, now.getMonth() + 1, now.getFullYear());
+  const tren = hitungSkorTrenPengeluaran(transaksi);
+  const diversifikasi = hitungSkorDiversifikasi(transaksi);
+  const konsistensiCatat = hitungSkorKonsistensiCatat(transaksi);
+
+  const totalSkor = tabungan.skor + budgetConsistency.skor + tren.skor + diversifikasi.skor + konsistensiCatat.skor;
+
+  return {
+    total: totalSkor,
+    komponen: [
+      { nama: "Rasio Tabungan", skor: tabungan.skor, maks: 20, detail: `${(tabungan.rasio * 100).toFixed(1)}% dari pemasukan` },
+      { nama: "Konsistensi Anggaran", skor: budgetConsistency.skor, maks: 20, detail: budgetConsistency.keterangan },
+      { nama: "Tren Pengeluaran", skor: tren.skor, maks: 20, detail: tren.tren },
+      { nama: "Diversifikasi Kategori", skor: diversifikasi.skor, maks: 20, detail: diversifikasi.keterangan },
+      { nama: "Konsistensi Mencatat", skor: konsistensiCatat.skor, maks: 20, detail: konsistensiCatat.keterangan },
+    ],
+  };
+}
+
+function labelSkor(total) {
+  if (total >= 85) return { label: "Sangat Sehat", warna: "#1B5E42" };
+  if (total >= 65) return { label: "Sehat", warna: "#2D8A63" };
+  if (total >= 45) return { label: "Cukup", warna: "#B8860B" };
+  if (total >= 25) return { label: "Perlu Perhatian", warna: "#B85C2E" };
+  return { label: "Berisiko", warna: "#8C2F2F" };
+}
+
+// ── Tab Financial Health Score ──────────────────────────────────
+function TabHealthScore({ transaksi, token }) {
+  const { dark } = useTheme();
+  const t = tokens(dark);
+  const [insightAI, setInsightAI] = useState("");
+  const [loadingInsight, setLoadingInsight] = useState(false);
+  const [budgets, setBudgets] = useState([]);
+  const [loadingBudget, setLoadingBudget] = useState(true);
+
+  // Ambil budget bulan berjalan secara independen — supaya tidak perlu
+  // merombak state-management TabBudget yang sudah berjalan baik.
+  useEffect(() => {
+    const now = new Date();
+    sb.fetchBudget(token, now.getMonth() + 1, now.getFullYear())
+      .then(d => setBudgets(Array.isArray(d) ? d : []))
+      .catch(() => setBudgets([]))
+      .finally(() => setLoadingBudget(false));
+  }, [token]);
+
+  const hasil = useMemo(() => hitungFinancialHealthScore(transaksi, budgets), [transaksi, budgets]);
+  const { label, warna } = labelSkor(hasil.total);
+
+  const mintaInsightAI = async () => {
+    setLoadingInsight(true);
+    try {
+      const ringkasanKomponen = hasil.komponen.map(k => `${k.nama}: ${k.skor}/${k.maks} (${k.detail})`).join("; ");
+      const prompt = `Kamu adalah penasihat keuangan personal. Skor kesehatan finansial pengguna adalah ${hasil.total}/100 (kategori: ${label}).
+Rincian komponen: ${ringkasanKomponen}.
+Berikan 2-3 kalimat insight singkat dalam Bahasa Indonesia yang personal dan actionable — apa yang sudah baik, dan satu saran konkret untuk ditingkatkan. Jangan mengulang angka skor secara mentah, fokus ke maknanya.`;
+
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${GEMINI_API_KEY}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            generationConfig: { maxOutputTokens: 300 },
+          }),
+        }
+      );
+      const data = await res.json();
+      const teks = data.candidates?.[0]?.content?.parts?.[0]?.text || "Tidak dapat memuat insight saat ini.";
+      setInsightAI(teks);
+    } catch {
+      setInsightAI("Gagal terhubung ke AI untuk insight tambahan. Cek koneksi atau API key Gemini kamu.");
+    }
+    setLoadingInsight(false);
+  };
+
+  const cardTitle = { fontFamily:t.fontDisplay, fontWeight:600, fontSize:15.5, color:t.text, marginBottom:14 };
+  const circumference = 2 * Math.PI * 54;
+  const dashOffset = circumference - (hasil.total / 100) * circumference;
+
+  if (loadingBudget) {
+    return (
+      <div>
+        <div className="skeleton" style={{ height:220, borderRadius:14, marginBottom:16 }} />
+        <div className="skeleton" style={{ height:180, borderRadius:14 }} />
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {/* Skor Utama — gauge circular */}
+      <div style={{ background:t.surface, borderRadius:14, padding:28, marginBottom:16, boxShadow:t.cardShadow, border:`1px solid ${t.borderSoft}`, textAlign:"center" }}>
+        <div style={{ position:"relative", width:140, height:140, margin:"0 auto 16px" }}>
+          <svg width="140" height="140" viewBox="0 0 120 120" style={{ transform:"rotate(-90deg)" }}>
+            <circle cx="60" cy="60" r="54" fill="none" stroke={t.surface2} strokeWidth="10" />
+            <circle
+              cx="60" cy="60" r="54" fill="none" stroke={warna} strokeWidth="10" strokeLinecap="round"
+              strokeDasharray={circumference} strokeDashoffset={dashOffset}
+              style={{ transition:"stroke-dashoffset 1s cubic-bezier(0.22,1,0.36,1)" }}
+            />
+          </svg>
+          <div style={{ position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center" }}>
+            <div className="num-tabular" style={{ fontFamily:t.fontMono, fontSize:34, fontWeight:800, color:t.text, lineHeight:1 }}>{hasil.total}</div>
+            <div style={{ fontSize:10.5, color:t.textMuted, marginTop:2 }}>dari 100</div>
+          </div>
+        </div>
+        <div style={{ display:"inline-block", padding:"5px 16px", borderRadius:99, background:warna+"1c", color:warna, fontWeight:700, fontSize:13.5 }}>
+          {label}
+        </div>
+      </div>
+
+      {/* Rincian Komponen */}
+      <div style={{ background:t.surface, borderRadius:14, padding:20, marginBottom:16, boxShadow:t.cardShadow, border:`1px solid ${t.borderSoft}` }}>
+        <div style={cardTitle}>Rincian Skor</div>
+        {hasil.komponen.map((k, i) => (
+          <div key={i} style={{ marginBottom: i < hasil.komponen.length-1 ? 16 : 0 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
+              <span style={{ fontSize:13, fontWeight:600, color:t.text }}>{k.nama}</span>
+              <span className="num-tabular" style={{ fontSize:12.5, fontFamily:t.fontMono, color:t.textMuted }}>{k.skor}/{k.maks}</span>
+            </div>
+            <div style={{ height:6, background:t.surface2, borderRadius:99, overflow:"hidden", marginBottom:5 }}>
+              <div style={{
+                height:6, borderRadius:99,
+                background: k.skor/k.maks >= 0.7 ? t.green : k.skor/k.maks >= 0.4 ? t.gold : t.red,
+                width:`${(k.skor/k.maks)*100}%`, transition:"width 0.8s cubic-bezier(0.22,1,0.36,1)",
+              }} />
+            </div>
+            <div style={{ fontSize:11.5, color:t.textMuted }}>{k.detail}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Insight AI */}
+      <div style={{ background: dark?"rgba(212,160,23,0.08)":"rgba(184,134,11,0.05)", borderRadius:14, padding:20, border:`1px solid ${dark?"rgba(212,160,23,0.2)":"rgba(184,134,11,0.15)"}` }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+          <div style={{ fontFamily:t.fontDisplay, fontWeight:600, fontSize:14, color:t.gold }}>Wawasan AI</div>
+          {!insightAI && (
+            <button className="btn-press ripple-container" onMouseDown={createRipple} onClick={mintaInsightAI} disabled={loadingInsight} style={{
+              padding:"6px 14px", borderRadius:7, border:"none",
+              background:`linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`, color:"#181820",
+              fontWeight:700, fontSize:11.5, cursor:loadingInsight?"not-allowed":"pointer",
+            }}>{loadingInsight ? "Memuat..." : "Minta Analisis"}</button>
+          )}
+        </div>
+        {insightAI ? (
+          <div style={{ fontSize:13, color:t.text, lineHeight:1.75 }}>{insightAI}</div>
+        ) : (
+          <div style={{ fontSize:12.5, color:t.textMuted, lineHeight:1.6 }}>
+            Tap "Minta Analisis" untuk mendapat insight personal dari AI berdasarkan skor kamu di atas.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Tab Prediksi (100% Frontend — tanpa backend) ───────────────
 function TabPrediksi({ transaksi }) {
   const { dark } = useTheme();
   const t = tokens(dark);
@@ -2852,6 +3097,7 @@ export default function App() {
     { id:"dashboard", label:"Ringkasan", icon:"◧" },
     { id:"dompet",    label:"Dompet",    icon:"◈" },
     { id:"budget",    label:"Anggaran",  icon:"◎" },
+    { id:"skor",      label:"Skor Sehat", icon:"❖" },
     { id:"prediksi",  label:"Proyeksi",  icon:"◆" },
     { id:"ai",        label:"Penasihat AI", icon:"✦" },
     { id:"transaksi", label:"Transaksi", icon:"☰" },
@@ -3098,6 +3344,9 @@ export default function App() {
               {/* Tab: Budget */}
               {tab==="budget" && <TabBudget transaksi={transaksi} token={token} showToast={showToast} />}
 
+              {/* Tab: Skor Kesehatan Finansial */}
+              {tab==="skor" && <TabHealthScore transaksi={transaksi} token={token} />}
+
               {/* Tab: Prediksi */}
               {tab==="prediksi" && <TabPrediksi transaksi={transaksi} />}
 
@@ -3178,18 +3427,18 @@ export default function App() {
           display:"none", position:"fixed", left:0, right:0, bottom:0, zIndex:40,
           background:th.sidebarBg, borderTop:"1px solid rgba(255,255,255,0.08)",
           padding:"8px 4px calc(8px + env(safe-area-inset-bottom))",
-          justifyContent:"space-around", alignItems:"center",
+          alignItems:"center", overflowX:"auto",
         }}>
           {TABS.map(tb => (
             <button key={tb.id} className="btn-press ripple-container" onMouseDown={createRipple} onClick={()=>setTab(tb.id)} style={{
-              display:"flex", flexDirection:"column", alignItems:"center", gap:2,
+              display:"flex", flexDirection:"column", alignItems:"center", gap:2, flexShrink:0,
               background:"transparent", border:"none", cursor:"pointer",
-              color: tab===tb.id ? ACCENT_GOLD_L : th.sidebarText, padding:"4px 6px", flex:1,
+              color: tab===tb.id ? ACCENT_GOLD_L : th.sidebarText, padding:"4px 12px", minWidth:60,
               transform: tab===tb.id ? "translateY(-2px)" : "translateY(0)",
               transition:"transform 0.22s cubic-bezier(0.34,1.56,0.64,1), color 0.2s",
             }}>
               <span style={{ fontSize:17 }}>{tb.icon}</span>
-              <span style={{ fontSize:9.5, fontWeight:600 }}>{tb.label}</span>
+              <span style={{ fontSize:9.5, fontWeight:600, whiteSpace:"nowrap" }}>{tb.label}</span>
             </button>
           ))}
         </div>
