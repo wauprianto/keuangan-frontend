@@ -2191,64 +2191,67 @@ function hitungAkurasi(aktual, prediksi) {
 }
 
 // Fungsi utama: hitung proyeksi N bulan ke depan dari histori transaksi
-function hitungProyeksiFrontend(transaksi, nBulan) {
-  const perBulan = {};
+function hitungProyeksiFrontend(transaksi, nHari) {
+  // Kelompokkan pengeluaran per HARI (bukan per bulan) — supaya user baru
+  // pakai app beberapa hari saja sudah bisa dapat proyeksi, tidak perlu
+  // menunggu 3 bulan penuh.
+  const perHari = {};
   transaksi.filter(t => t.tipe === "pengeluaran").forEach(t => {
-    const d = new Date(t.tanggal);
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-    perBulan[key] = (perBulan[key] || 0) + t.jumlah;
+    perHari[t.tanggal] = (perHari[t.tanggal] || 0) + t.jumlah;
   });
 
-  const bulanKeys = Object.keys(perBulan).sort();
-  if (bulanKeys.length < 3) {
-    throw new Error("Butuh minimal 3 bulan data pengeluaran untuk membuat proyeksi.");
+  const hariKeys = Object.keys(perHari).sort();
+  if (hariKeys.length < 3) {
+    throw new Error("Butuh minimal 3 hari data pengeluaran (bisa di hari berbeda dalam 1 minggu) untuk membuat proyeksi.");
   }
 
-  const nilaiHistoris = bulanKeys.map(k => perBulan[k]);
+  const nilaiHistoris = hariKeys.map(k => perHari[k]);
 
   const { a, b } = regresiLinear(nilaiHistoris);
-  const prediksiLinear = Array.from({ length: nBulan }, (_, i) => Math.max(0, a + b * (nilaiHistoris.length + i)));
+  const prediksiLinear = Array.from({ length: nHari }, (_, i) => Math.max(0, a + b * (nilaiHistoris.length + i)));
 
-  const rataRata = movingAverage(nilaiHistoris, Math.min(3, nilaiHistoris.length));
-  const prediksiMA = Array.from({ length: nBulan }, () => rataRata);
+  const windowMA = Math.min(7, nilaiHistoris.length); // rata-rata 7 hari terakhir (atau lebih sedikit kalau data belum cukup)
+  const rataRata = movingAverage(nilaiHistoris, windowMA);
+  const prediksiMA = Array.from({ length: nHari }, () => rataRata);
 
   const prediksiGabungan = prediksiLinear.map((pl, i) => {
-    const bobotTren = Math.max(0.3, 0.7 - i * 0.15);
+    const bobotTren = Math.max(0.3, 0.7 - i * 0.05); // menurun lebih lambat karena unit sekarang harian, bukan bulanan
     return Math.max(0, pl * bobotTren + prediksiMA[i] * (1 - bobotTren));
   });
 
-  let akurasiLinear = 75, akurasiGabungan = 80;
+  let akurasiLinear = 70, akurasiGabungan = 75;
   if (nilaiHistoris.length >= 5) {
-    const train = nilaiHistoris.slice(0, -2);
-    const testAktual = nilaiHistoris.slice(-2);
+    const jumlahUji = Math.min(2, Math.floor(nilaiHistoris.length * 0.3)) || 1;
+    const train = nilaiHistoris.slice(0, -jumlahUji);
+    const testAktual = nilaiHistoris.slice(-jumlahUji);
     const { a: a2, b: b2 } = regresiLinear(train);
     const testPrediksiLinear = testAktual.map((_, i) => Math.max(0, a2 + b2 * (train.length + i)));
-    const rataTrain = movingAverage(train, Math.min(3, train.length));
+    const rataTrain = movingAverage(train, Math.min(7, train.length));
     const testPrediksiGabungan = testPrediksiLinear.map(pl => pl * 0.55 + rataTrain * 0.45);
 
     akurasiLinear = hitungAkurasi(testAktual, testPrediksiLinear);
     akurasiGabungan = hitungAkurasi(testAktual, testPrediksiGabungan);
   }
 
-  const [lastYear, lastMonth] = bulanKeys[bulanKeys.length - 1].split("-").map(Number);
-  const labelBulan = Array.from({ length: nBulan }, (_, i) => {
-    const totalBulan = lastMonth - 1 + i + 1;
-    const tahunBaru = lastYear + Math.floor(totalBulan / 12);
-    const bulanBaru = totalBulan % 12;
-    return `${BULAN_ID[bulanBaru]} ${tahunBaru}`;
+  // Generate label tanggal untuk N hari ke depan, format singkat "12 Jul"
+  const lastDate = new Date(hariKeys[hariKeys.length - 1]);
+  const labelHari = Array.from({ length: nHari }, (_, i) => {
+    const d = new Date(lastDate);
+    d.setDate(d.getDate() + i + 1);
+    return `${d.getDate()} ${BULAN_ID[d.getMonth()]}`;
   });
 
   const rataHistoris = nilaiHistoris.reduce((s, v) => s + v, 0) / nilaiHistoris.length;
   const rataPrediksi = prediksiGabungan.reduce((s, v) => s + v, 0) / prediksiGabungan.length;
   const tren = rataPrediksi > rataHistoris ? "naik" : "turun";
   const persenPerubahan = rataHistoris !== 0 ? Math.abs((rataPrediksi - rataHistoris) / rataHistoris * 100) : 0;
-  const bulanTertinggiIdx = nilaiHistoris.indexOf(Math.max(...nilaiHistoris));
-  const [thTertinggi, blnTertinggi] = bulanKeys[bulanTertinggiIdx].split("-").map(Number);
+  const hariTertinggiIdx = nilaiHistoris.indexOf(Math.max(...nilaiHistoris));
+  const tglTertinggi = new Date(hariKeys[hariTertinggiIdx]);
 
-  const insight = `Berdasarkan analisis tren dari ${nilaiHistoris.length} bulan data, pengeluaran diproyeksikan ${tren} sekitar ${persenPerubahan.toFixed(1)}% dibanding rata-rata historis (${formatRp(rataHistoris)}/bulan). Pengeluaran tertinggi tercatat pada ${BULAN_ID[blnTertinggi-1]} ${thTertinggi}. Proyeksi rata-rata untuk periode ke depan: ${formatRp(rataPrediksi)}/bulan.`;
+  const insight = `Berdasarkan analisis tren dari ${nilaiHistoris.length} hari data, pengeluaran diproyeksikan ${tren} sekitar ${persenPerubahan.toFixed(1)}% dibanding rata-rata historis (${formatRp(rataHistoris)}/hari). Pengeluaran tertinggi tercatat pada ${tglTertinggi.getDate()} ${BULAN_ID[tglTertinggi.getMonth()]} ${tglTertinggi.getFullYear()}. Proyeksi rata-rata untuk periode ke depan: ${formatRp(rataPrediksi)}/hari.`;
 
   return {
-    bulan: labelBulan,
+    bulan: labelHari,
     prediksi_linear: prediksiLinear.map(v => Math.round(v)),
     prediksi_ma: prediksiMA.map(v => Math.round(v)),
     prediksi_gabungan: prediksiGabungan.map(v => Math.round(v)),
@@ -2511,13 +2514,18 @@ function TabPrediksi({ transaksi }) {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
-  const [nBulan, setNBulan] = useState(3);
+  const [nHari, setNHari] = useState(7);
+
+  const jumlahHariUnik = useMemo(() => {
+    const hariSet = new Set(transaksi.filter(t => t.tipe === "pengeluaran").map(t => t.tanggal));
+    return hariSet.size;
+  }, [transaksi]);
 
   const jalankanPrediksi = () => {
     setLoading(true); setErr(""); setResult(null);
     setTimeout(() => {
       try {
-        const hasil = hitungProyeksiFrontend(transaksi, nBulan);
+        const hasil = hitungProyeksiFrontend(transaksi, nHari);
         setResult(hasil);
       } catch (e) {
         setErr(e.message);
@@ -2554,25 +2562,22 @@ function TabPrediksi({ transaksi }) {
       {/* Panel Kontrol */}
       <div style={{ background:t.surface, borderRadius:12, padding:22, marginBottom:16, boxShadow:t.cardShadow, border:`1px solid ${t.borderSoft}` }}>
         <div style={cardTitle}>Proyeksi Pengeluaran</div>
-        <div style={{ fontSize:12.5, color:t.textMuted, marginBottom:18, lineHeight:1.65 }}>
-          Dihitung langsung di browser kamu memakai regresi linear dan rata-rata bergerak — tanpa server, hasil instan.
-        </div>
         <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-          <select value={nBulan} onChange={e=>setNBulan(Number(e.target.value))} style={{ ...inp, flex:1 }}>
-            <option value={1}>1 bulan ke depan</option>
-            <option value={3}>3 bulan ke depan</option>
-            <option value={6}>6 bulan ke depan</option>
+          <select value={nHari} onChange={e=>setNHari(Number(e.target.value))} style={{ ...inp, flex:1 }}>
+            <option value={3}>3 hari ke depan</option>
+            <option value={7}>7 hari ke depan</option>
+            <option value={14}>14 hari ke depan</option>
           </select>
-          <button className="btn-press ripple-container" onMouseDown={createRipple} onClick={jalankanPrediksi} disabled={loading || transaksi.length < 3} style={{
+          <button className="btn-press ripple-container" onMouseDown={createRipple} onClick={jalankanPrediksi} disabled={loading || jumlahHariUnik < 3} style={{
             padding:"11px 22px", borderRadius:9, border:"none",
-            background: (loading||transaksi.length<3) ? t.surface2 : `linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`,
-            color:(loading||transaksi.length<3) ? t.textMuted : "#181820", fontWeight:700, fontSize:13, cursor:(loading||transaksi.length<3)?"not-allowed":"pointer", whiteSpace:"nowrap",
+            background: (loading||jumlahHariUnik<3) ? t.surface2 : `linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`,
+            color:(loading||jumlahHariUnik<3) ? t.textMuted : "#181820", fontWeight:700, fontSize:13, cursor:(loading||jumlahHariUnik<3)?"not-allowed":"pointer", whiteSpace:"nowrap",
           }}>
             {loading ? "Menghitung..." : "Jalankan"}
           </button>
         </div>
-        {transaksi.length < 3 && (
-          <div style={{ fontSize:12, color:t.gold, marginTop:10 }}>Butuh minimal 3 transaksi pengeluaran untuk menjalankan proyeksi</div>
+        {jumlahHariUnik < 3 && (
+          <div style={{ fontSize:12, color:t.gold, marginTop:10 }}>Butuh data pengeluaran di minimal 3 hari berbeda untuk menjalankan proyeksi (saat ini: {jumlahHariUnik} hari)</div>
         )}
       </div>
 
@@ -2623,7 +2628,7 @@ function TabPrediksi({ transaksi }) {
               <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5 }}>
                 <thead>
                   <tr style={{ background:t.surface2 }}>
-                    {["Bulan","Tren Linear","Rata-rata","Gabungan*"].map(h => (
+                    {["Tanggal","Tren Linear","Rata-rata","Gabungan*"].map(h => (
                       <th key={h} style={{ padding:"9px 11px", textAlign:"left", fontWeight:700, color:t.textSub, borderBottom:`1px solid ${t.border}`, fontFamily:t.fontBody }}>{h}</th>
                     ))}
                   </tr>
