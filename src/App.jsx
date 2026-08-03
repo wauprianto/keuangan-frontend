@@ -1542,8 +1542,6 @@ function AuthScreen({ onAuth }) {
             </div>
           </div>
 
-          <IOSInstallBanner />
-
           <div style={{ display:"flex", background:t.surface2, borderRadius:9, padding:4, marginBottom:22 }}>
             {["login","register"].map(m => <button key={m} className="btn-press" onClick={()=>{setMode(m);setErr("");}} style={{ flex:1, padding:"9px", borderRadius:6, border:"none", background:mode===m?t.surface:"transparent", color:mode===m?t.text:t.textMuted, fontWeight:600, fontSize:13, cursor:"pointer", boxShadow: mode===m ? t.cardShadow : "none" }}>{m==="login"?"Masuk":"Daftar"}</button>)}
           </div>
@@ -3269,7 +3267,6 @@ export default function App() {
           {/* Content body */}
           <div style={{ padding:"28px 32px 100px", maxWidth:920 }}>
 
-            <IOSInstallBanner />
             <OfflineBanner online={online} pendingCount={pendingSync} syncing={syncing} />
 
             {/* Form */}
