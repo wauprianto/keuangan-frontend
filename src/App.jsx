@@ -264,6 +264,41 @@ Jika ucapan tidak mengandung informasi transaksi yang jelas (tidak ada angka/jum
   }
 }
 
+// ── Helper: Saran kategori otomatis saat mengetik catatan transaksi ──
+// Dibuat seringan mungkin (prompt pendek, output dibatasi ketat) karena ini
+// dipanggil berulang kali saat user mengetik — perlu cepat, bukan detail.
+async function saranKategoriDenganGemini(catatan, tipe) {
+  const daftarKategori = tipe === "pemasukan"
+    ? CATS.pemasukan.join(", ")
+    : CATS.pengeluaran.join(", ");
+
+  const prompt = `Catatan transaksi: "${catatan}"
+Tipe: ${tipe}
+Pilih SATU kategori yang paling cocok dari daftar ini: ${daftarKategori}
+Balas HANYA dengan nama kategori persis seperti di daftar, tanpa tanda kutip, tanpa penjelasan apapun.`;
+
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent?key=${GEMINI_API_KEY}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: { maxOutputTokens: 20, temperature: 0 },
+      }),
+    }
+  );
+
+  const data = await res.json();
+  const rawText = (data.candidates?.[0]?.content?.parts?.[0]?.text || "").trim();
+
+  // Validasi: pastikan hasil AI persis cocok dengan salah satu kategori yang ada,
+  // supaya tidak menyarankan kategori "halusinasi" yang tidak terdaftar.
+  const daftarArray = tipe === "pemasukan" ? CATS.pemasukan : CATS.pengeluaran;
+  const cocok = daftarArray.find(k => k.toLowerCase() === rawText.toLowerCase());
+  return cocok || null;
+}
+
 const formatRp  = (n) => "Rp " + Math.abs(Number(n)).toLocaleString("id-ID");
 const today     = () => new Date().toISOString().split("T")[0];
 
@@ -2180,6 +2215,35 @@ function movingAverage(nilaiPerBulan, window = 3) {
   return slice.reduce((s, v) => s + v, 0) / slice.length;
 }
 
+// Exponential Smoothing (Holt's Linear Trend method) — beri bobot lebih besar
+// ke data TERBARU dibanding data lama, dan tetap menangkap arah tren (naik/turun).
+// Beda dengan regresi linear yang menganggap semua titik data sama pentingnya,
+// exponential smoothing lebih responsif ke perubahan pola belanja terkini —
+// cocok untuk pengeluaran harian yang naik-turun tidak beraturan.
+//
+// alpha: seberapa cepat "level" mengikuti data baru (0-1, makin tinggi makin responsif)
+// beta: seberapa cepat "tren" mengikuti perubahan (0-1)
+function exponentialSmoothing(nilai, nPrediksi, alpha = 0.4, beta = 0.3) {
+  if (nilai.length < 2) {
+    const flat = nilai[0] || 0;
+    return { prediksi: Array(nPrediksi).fill(flat), levelAkhir: flat, trenAkhir: 0 };
+  }
+
+  let level = nilai[0];
+  let tren = nilai[1] - nilai[0];
+
+  for (let i = 1; i < nilai.length; i++) {
+    const levelBaru = alpha * nilai[i] + (1 - alpha) * (level + tren);
+    const trenBaru = beta * (levelBaru - level) + (1 - beta) * tren;
+    level = levelBaru;
+    tren = trenBaru;
+  }
+
+  // Proyeksi ke depan: level + tren yang bertambah tiap langkah
+  const prediksi = Array.from({ length: nPrediksi }, (_, i) => Math.max(0, level + tren * (i + 1)));
+  return { prediksi, levelAkhir: level, trenAkhir: tren };
+}
+
 // Hitung MAPE (Mean Absolute Percentage Error) sederhana untuk estimasi akurasi
 function hitungAkurasi(aktual, prediksi) {
   const pasangan = aktual.map((a, i) => [a, prediksi[i]]).filter(([a]) => a !== 0);
@@ -2188,7 +2252,9 @@ function hitungAkurasi(aktual, prediksi) {
   return Math.max(0, Math.min(100, Math.round((1 - mape) * 100)));
 }
 
-// Fungsi utama: hitung proyeksi N bulan ke depan dari histori transaksi
+// Fungsi utama: hitung proyeksi N hari ke depan dari histori transaksi.
+// Menggabungkan 3 model: Regresi Linear, Moving Average, dan Exponential
+// Smoothing — masing-masing menangkap pola berbeda, lalu digabung tertimbang.
 function hitungProyeksiFrontend(transaksi, nHari) {
   // Kelompokkan pengeluaran per HARI (bukan per bulan) — supaya user baru
   // pakai app beberapa hari saja sudah bisa dapat proyeksi, tidak perlu
@@ -2205,29 +2271,46 @@ function hitungProyeksiFrontend(transaksi, nHari) {
 
   const nilaiHistoris = hariKeys.map(k => perHari[k]);
 
+  // Model 1: Regresi Linear — tangkap arah tren keseluruhan, tiap titik data
+  // dianggap sama pentingnya (kurang responsif ke perubahan pola terbaru).
   const { a, b } = regresiLinear(nilaiHistoris);
   const prediksiLinear = Array.from({ length: nHari }, (_, i) => Math.max(0, a + b * (nilaiHistoris.length + i)));
 
-  const windowMA = Math.min(7, nilaiHistoris.length); // rata-rata 7 hari terakhir (atau lebih sedikit kalau data belum cukup)
+  // Model 2: Moving Average — baseline stabil dari rata-rata beberapa hari terakhir.
+  const windowMA = Math.min(7, nilaiHistoris.length);
   const rataRata = movingAverage(nilaiHistoris, windowMA);
   const prediksiMA = Array.from({ length: nHari }, () => rataRata);
 
+  // Model 3: Exponential Smoothing — bobot lebih besar ke data TERBARU,
+  // lebih responsif kalau pola belanja belakangan ini berubah dari histori lama.
+  const { prediksi: prediksiES } = exponentialSmoothing(nilaiHistoris, nHari);
+
+  // Gabungan: rata-rata tertimbang dari ketiga model. Bobot tren (Linear + ES)
+  // mendominasi di hari-hari dekat, bergeser ke Moving Average untuk hari
+  // yang lebih jauh (karena proyeksi tren makin tidak reliable untuk jangka panjang).
   const prediksiGabungan = prediksiLinear.map((pl, i) => {
-    const bobotTren = Math.max(0.3, 0.7 - i * 0.05); // menurun lebih lambat karena unit sekarang harian, bukan bulanan
-    return Math.max(0, pl * bobotTren + prediksiMA[i] * (1 - bobotTren));
+    const bobotTren = Math.max(0.3, 0.7 - i * 0.05);
+    const bobotSisa = 1 - bobotTren;
+    // Tren dibagi rata antara Linear & Exponential Smoothing, sisanya ke Moving Average
+    return Math.max(0, pl * (bobotTren * 0.5) + prediksiES[i] * (bobotTren * 0.5) + prediksiMA[i] * bobotSisa);
   });
 
-  let akurasiLinear = 70, akurasiGabungan = 75;
+  let akurasiLinear = 70, akurasiES = 72, akurasiGabungan = 75;
   if (nilaiHistoris.length >= 5) {
     const jumlahUji = Math.min(2, Math.floor(nilaiHistoris.length * 0.3)) || 1;
     const train = nilaiHistoris.slice(0, -jumlahUji);
     const testAktual = nilaiHistoris.slice(-jumlahUji);
+
     const { a: a2, b: b2 } = regresiLinear(train);
     const testPrediksiLinear = testAktual.map((_, i) => Math.max(0, a2 + b2 * (train.length + i)));
+
+    const { prediksi: testPrediksiES } = exponentialSmoothing(train, jumlahUji);
+
     const rataTrain = movingAverage(train, Math.min(7, train.length));
-    const testPrediksiGabungan = testPrediksiLinear.map(pl => pl * 0.55 + rataTrain * 0.45);
+    const testPrediksiGabungan = testPrediksiLinear.map((pl, i) => pl * 0.35 + testPrediksiES[i] * 0.35 + rataTrain * 0.3);
 
     akurasiLinear = hitungAkurasi(testAktual, testPrediksiLinear);
+    akurasiES = hitungAkurasi(testAktual, testPrediksiES);
     akurasiGabungan = hitungAkurasi(testAktual, testPrediksiGabungan);
   }
 
@@ -2252,8 +2335,10 @@ function hitungProyeksiFrontend(transaksi, nHari) {
     bulan: labelHari,
     prediksi_linear: prediksiLinear.map(v => Math.round(v)),
     prediksi_ma: prediksiMA.map(v => Math.round(v)),
+    prediksi_es: prediksiES.map(v => Math.round(v)),
     prediksi_gabungan: prediksiGabungan.map(v => Math.round(v)),
     akurasi_linear: akurasiLinear,
+    akurasi_es: akurasiES,
     akurasi_gabungan: akurasiGabungan,
     insight,
   };
@@ -2551,6 +2636,7 @@ function TabPrediksi({ transaksi }) {
         bulan: b,
         Tren: result.prediksi_linear[i],
         "Rata-rata": result.prediksi_ma[i],
+        "Exp. Smoothing": result.prediksi_es[i],
         Gabungan: result.prediksi_gabungan[i],
       }))
     : [];
@@ -2590,14 +2676,15 @@ function TabPrediksi({ transaksi }) {
       {result && (
         <>
           {/* Akurasi */}
-          <div style={{ display:"flex", gap:12, marginBottom:16 }}>
+          <div style={{ display:"flex", gap:10, marginBottom:16 }}>
             {[
-              { label:"Akurasi Tren Linear", val:`${result.akurasi_linear}%` },
-              { label:"Akurasi Gabungan", val:`${result.akurasi_gabungan}%` },
+              { label:"Tren Linear", val:`${result.akurasi_linear}%` },
+              { label:"Exp. Smoothing", val:`${result.akurasi_es}%` },
+              { label:"Gabungan", val:`${result.akurasi_gabungan}%` },
             ].map((item, i) => (
-              <div key={i} style={{ flex:1, background:t.surface, borderRadius:12, padding:"16px 18px", boxShadow:t.cardShadow, border:`1px solid ${t.borderSoft}` }}>
-                <div className="num-tabular" style={{ fontFamily:t.fontMono, fontSize:25, fontWeight:800, color:t.gold }}>{item.val}</div>
-                <div style={{ fontSize:11.5, color:t.textMuted, marginTop:3 }}>{item.label}</div>
+              <div key={i} style={{ flex:1, background:t.surface, borderRadius:12, padding:"14px 12px", boxShadow:t.cardShadow, border:`1px solid ${t.borderSoft}`, textAlign:"center" }}>
+                <div className="num-tabular" style={{ fontFamily:t.fontMono, fontSize:21, fontWeight:800, color:t.gold }}>{item.val}</div>
+                <div style={{ fontSize:10.5, color:t.textMuted, marginTop:3 }}>{item.label}</div>
               </div>
             ))}
           </div>
@@ -2614,6 +2701,7 @@ function TabPrediksi({ transaksi }) {
                 <Legend wrapperStyle={{ fontSize:12, color:t.text, paddingTop:8 }} iconType="circle" iconSize={8} />
                 <Line type="monotone" dataKey="Tren" stroke={dark?"#6E6B62":"#A19E93"} strokeWidth={1.75} dot={{ r:3.5 }} />
                 <Line type="monotone" dataKey="Rata-rata" stroke={t.green} strokeWidth={1.75} dot={{ r:3.5 }} />
+                <Line type="monotone" dataKey="Exp. Smoothing" stroke="#3D6E96" strokeWidth={1.75} dot={{ r:3.5 }} />
                 <Line type="monotone" dataKey="Gabungan" stroke={t.gold} strokeWidth={3} dot={{ r:5 }} />
               </LineChart>
             </ResponsiveContainer>
@@ -2626,8 +2714,8 @@ function TabPrediksi({ transaksi }) {
               <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5 }}>
                 <thead>
                   <tr style={{ background:t.surface2 }}>
-                    {["Tanggal","Tren Linear","Rata-rata","Gabungan*"].map(h => (
-                      <th key={h} style={{ padding:"9px 11px", textAlign:"left", fontWeight:700, color:t.textSub, borderBottom:`1px solid ${t.border}`, fontFamily:t.fontBody }}>{h}</th>
+                    {["Tanggal","Tren Linear","Rata-rata","Exp. Smoothing","Gabungan*"].map(h => (
+                      <th key={h} style={{ padding:"9px 11px", textAlign:"left", fontWeight:700, color:t.textSub, borderBottom:`1px solid ${t.border}`, fontFamily:t.fontBody, whiteSpace:"nowrap" }}>{h}</th>
                     ))}
                   </tr>
                 </thead>
@@ -2637,12 +2725,13 @@ function TabPrediksi({ transaksi }) {
                       <td style={{ padding:"9px 11px", fontWeight:600, color:t.text }}>{b}</td>
                       <td className="num-tabular" style={{ padding:"9px 11px", color:t.textSub, fontFamily:t.fontMono }}>{formatRp(result.prediksi_linear[i])}</td>
                       <td className="num-tabular" style={{ padding:"9px 11px", color:t.green, fontFamily:t.fontMono }}>{formatRp(result.prediksi_ma[i])}</td>
+                      <td className="num-tabular" style={{ padding:"9px 11px", color:"#3D6E96", fontFamily:t.fontMono }}>{formatRp(result.prediksi_es[i])}</td>
                       <td className="num-tabular" style={{ padding:"9px 11px", color:t.gold, fontWeight:700, fontFamily:t.fontMono }}>{formatRp(result.prediksi_gabungan[i])}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
-              <div style={{ fontSize:11, color:t.textMuted, marginTop:10 }}>* Gabungan = kombinasi tren linear + rata-rata bergerak (rekomendasi)</div>
+              <div style={{ fontSize:11, color:t.textMuted, marginTop:10 }}>* Gabungan = kombinasi tren linear + exponential smoothing + rata-rata bergerak (rekomendasi)</div>
             </div>
           </div>
 
@@ -2828,6 +2917,8 @@ export default function App() {
   const [filterTipe, setFilter] = useState("semua");
   const [editId, setEditId]     = useState(null);
   const [form, setForm]         = useState({ tipe:"pengeluaran", kategori:"", jumlah:"", catatan:"", tanggal:today(), dompet_id:"" });
+  const [saranKategori, setSaranKategori] = useState(null); // kategori yang disarankan AI, null kalau belum ada/belum dijalankan
+  const [loadingSaran, setLoadingSaran] = useState(false);
   const [showScan, setShowScan] = useState(false);
   const [showVoice, setShowVoice] = useState(false);
   const [showExport, setShowExport] = useState(false);
@@ -2969,7 +3060,32 @@ export default function App() {
     }
   };
 
-  const resetForm    = () => { setForm({ tipe:"pengeluaran", kategori:"", jumlah:"", catatan:"", tanggal:today(), dompet_id: aktivDompetId||"" }); setEditId(null); setShowForm(false); };
+  const resetForm    = () => { setForm({ tipe:"pengeluaran", kategori:"", jumlah:"", catatan:"", tanggal:today(), dompet_id: aktivDompetId||"" }); setEditId(null); setShowForm(false); setSaranKategori(null); };
+
+  // Kategorisasi otomatis saat mengetik: tunggu user berhenti mengetik 700ms
+  // (debounce) sebelum memanggil AI — supaya tidak spam API tiap huruf diketik.
+  // Hanya jalan kalau: catatan cukup panjang, kategori belum dipilih manual,
+  // dan form transaksi sedang terbuka (bukan mode edit, supaya tidak menimpa
+  // kategori yang sudah user set sebelumnya saat edit transaksi lama).
+  useEffect(() => {
+    if (!showForm || editId) return;
+    if (!form.catatan || form.catatan.trim().length < 3) { setSaranKategori(null); return; }
+    if (form.kategori) { setSaranKategori(null); return; } // sudah pilih manual, tidak perlu saran lagi
+
+    const timer = setTimeout(async () => {
+      setLoadingSaran(true);
+      try {
+        const hasil = await saranKategoriDenganGemini(form.catatan, form.tipe);
+        setSaranKategori(hasil);
+      } catch {
+        setSaranKategori(null);
+      }
+      setLoadingSaran(false);
+    }, 700);
+
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.catatan, form.tipe, showForm, editId]);
 
   const handleHasilScan = (hasil) => {
     // Validasi kategori dari AI cocok dengan daftar kategori yang ada
@@ -3308,12 +3424,34 @@ export default function App() {
                     </button>
                   ))}
                 </div>
-                <select value={form.kategori} onChange={e=>setForm(f=>({...f,kategori:e.target.value}))} style={{ ...inp, marginBottom:10, appearance:"none" }}>
+                <select value={form.kategori} onChange={e=>{ setForm(f=>({...f,kategori:e.target.value})); setSaranKategori(null); }} style={{ ...inp, marginBottom:10, appearance:"none" }}>
                   <option value="">Pilih Kategori</option>
                   {CATS[form.tipe].map(k=><option key={k}>{k}</option>)}
                 </select>
                 <input type="number" placeholder="Jumlah (Rp)" value={form.jumlah} onChange={e=>setForm(f=>({...f,jumlah:e.target.value}))} style={{ ...inp, marginBottom:10, fontFamily:th.fontMono }} />
-                <input type="text" placeholder="Catatan (opsional)" value={form.catatan} onChange={e=>setForm(f=>({...f,catatan:e.target.value}))} style={{ ...inp, marginBottom:10 }} />
+                <input type="text" placeholder="Catatan (opsional)" value={form.catatan} onChange={e=>setForm(f=>({...f,catatan:e.target.value}))} style={{ ...inp, marginBottom: (saranKategori || loadingSaran) ? 6 : 10 }} />
+                {loadingSaran && (
+                  <div style={{ fontSize:11.5, color:th.textMuted, marginBottom:10, display:"flex", alignItems:"center", gap:6 }}>
+                    <span style={{ display:"inline-flex", gap:2 }}>
+                      {[0,1,2].map(i => <span key={i} style={{ width:4, height:4, borderRadius:"50%", background:th.textMuted, animation:`bounce 1.2s ${i*0.15}s infinite` }} />)}
+                    </span>
+                    Mencari saran kategori...
+                  </div>
+                )}
+                {!loadingSaran && saranKategori && (
+                  <button
+                    type="button"
+                    className="btn-press"
+                    onClick={() => { setForm(f => ({ ...f, kategori: saranKategori })); setSaranKategori(null); }}
+                    style={{
+                      display:"flex", alignItems:"center", gap:6, marginBottom:10,
+                      padding:"6px 12px", borderRadius:99, border:`1.5px dashed ${th.gold}`,
+                      background: dark ? "rgba(212,160,23,0.1)" : "rgba(184,134,11,0.06)",
+                      color:th.gold, fontSize:12, fontWeight:600, cursor:"pointer", width:"fit-content",
+                    }}>
+                    <span>{ICONS[saranKategori] || "✦"}</span> Sepertinya "{saranKategori}"? Tap untuk pakai
+                  </button>
+                )}
                 {dompet.length > 0 && (
                   <select value={form.dompet_id} onChange={e=>setForm(f=>({...f,dompet_id:e.target.value}))} style={{ ...inp, marginBottom:10, appearance:"none" }}>
                     <option value="">Pilih Dompet (opsional)</option>
