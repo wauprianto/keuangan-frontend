@@ -1,8 +1,3 @@
--- ============================================================
--- Migration 04: Tabel Recurring Transaction
--- Jalankan SETELAH migration 01-03 di Supabase SQL Editor
--- ============================================================
-
 CREATE TABLE recurring (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
