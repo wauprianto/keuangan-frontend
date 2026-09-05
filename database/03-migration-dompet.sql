@@ -1,9 +1,3 @@
--- ============================================================
--- Migration: Tabel Dompet (Multi-Wallet)
--- Jalankan di Supabase SQL Editor SETELAH migration sebelumnya
--- ============================================================
-
--- Tabel dompet
 CREATE TABLE dompet (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
