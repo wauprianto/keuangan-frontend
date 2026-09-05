@@ -1,3 +1,8 @@
+// ============================================================
+// App.jsx — Keuangan Pribadi Full-Stack
+// Fitur: Grafik (Recharts) + AI (Gemini 3.1 Flash-Lite) + Hybrid ARIMA-LSTM
+// ============================================================
+
 import { useState, useEffect, useMemo, useRef, createContext, useContext } from "react";
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area,
@@ -2488,10 +2493,12 @@ function TabDompet({ dompet, transaksi, token, showToast, onDompetChange, aktivD
     const tgl = new Date().toISOString().split("T")[0];
     const catatan = transfer.catatan || `Transfer ke ${dompet.find(d=>d.id===transfer.ke)?.nama}`;
     try {
-      // Catat sebagai pengeluaran di dompet asal
-      await sb.insert(token, { tipe:"pengeluaran", kategori:"Transfer", jumlah:Number(transfer.jumlah), catatan, tanggal:tgl, dompet_id:transfer.dari });
-      // Catat sebagai pemasukan di dompet tujuan
-      await sb.insert(token, { tipe:"pemasukan", kategori:"Transfer", jumlah:Number(transfer.jumlah), catatan:`Transfer dari ${dompet.find(d=>d.id===transfer.dari)?.nama}`, tanggal:tgl, dompet_id:transfer.ke });
+      // is_transfer: true — supaya statistik (Ringkasan, Grafik, Skor Kesehatan,
+      // Proyeksi) tidak menghitung ini sebagai pemasukan/pengeluaran riil.
+      // Tetap dicatat sebagai pengeluaran+pemasukan di tabel transaksi karena
+      // saldo PER DOMPET tetap butuh dua baris ini untuk akurat.
+      await sb.insert(token, { tipe:"pengeluaran", kategori:"Transfer", jumlah:Number(transfer.jumlah), catatan, tanggal:tgl, dompet_id:transfer.dari, is_transfer:true });
+      await sb.insert(token, { tipe:"pemasukan", kategori:"Transfer", jumlah:Number(transfer.jumlah), catatan:`Transfer dari ${dompet.find(d=>d.id===transfer.dari)?.nama}`, tanggal:tgl, dompet_id:transfer.ke, is_transfer:true });
       showToast("Transfer berhasil ✓");
       setShowTransfer(false);
       setTransfer({ dari:"", ke:"", jumlah:"", catatan:"" });
@@ -2701,24 +2708,28 @@ function TabGrafik({ transaksi }) {
   const { dark } = useTheme();
   const t = tokens(dark);
 
+  // Grafik statistik harus exclude transfer antar dompet — bukan aktivitas
+  // keuangan riil, hanya pemindahan uang antar kantong sendiri.
+  const transaksiRiil = useMemo(() => transaksi.filter(tx => !tx.is_transfer), [transaksi]);
+
   const dataPerBulan = useMemo(() => {
     const map = {};
-    transaksi.forEach(tx => {
+    transaksiRiil.forEach(tx => {
       const d = new Date(tx.tanggal);
       const key = `${BULAN_ID[d.getMonth()]} ${d.getFullYear()}`;
       if (!map[key]) map[key] = { bulan: key, pemasukan: 0, pengeluaran: 0 };
       map[key][tx.tipe] += tx.jumlah;
     });
     return Object.values(map).slice(-6);
-  }, [transaksi]);
+  }, [transaksiRiil]);
 
   const dataKategori = useMemo(() => {
     const map = {};
-    transaksi.filter(tx => tx.tipe === "pengeluaran").forEach(tx => {
+    transaksiRiil.filter(tx => tx.tipe === "pengeluaran").forEach(tx => {
       map[tx.kategori] = (map[tx.kategori] || 0) + tx.jumlah;
     });
     return Object.entries(map).sort((a,b)=>b[1]-a[1]).slice(0,6).map(([k,v])=>({ name: k, nilai: v }));
-  }, [transaksi]);
+  }, [transaksiRiil]);
 
   const customTooltip = ({ active, payload, label }) => {
     if (!active || !payload?.length) return null;
@@ -3037,9 +3048,10 @@ function hitungAkurasi(aktual, prediksi) {
 function hitungProyeksiFrontend(transaksi, nHari) {
   // Kelompokkan pengeluaran per HARI (bukan per bulan) — supaya user baru
   // pakai app beberapa hari saja sudah bisa dapat proyeksi, tidak perlu
-  // menunggu 3 bulan penuh.
+  // menunggu 3 bulan penuh. Transfer antar dompet di-exclude karena bukan
+  // pengeluaran riil, cuma pemindahan uang antar kantong sendiri.
   const perHari = {};
-  transaksi.filter(t => t.tipe === "pengeluaran").forEach(t => {
+  transaksi.filter(t => t.tipe === "pengeluaran" && !t.is_transfer).forEach(t => {
     perHari[t.tanggal] = (perHari[t.tanggal] || 0) + t.jumlah;
   });
 
@@ -3208,12 +3220,18 @@ function hitungSkorKonsistensiCatat(transaksi) {
 }
 
 function hitungFinancialHealthScore(transaksi, budgets) {
+  // Exclude transfer antar dompet dari SEMUA komponen skor — transfer bukan
+  // aktivitas keuangan riil (menabung, boros, dll), cuma pemindahan uang
+  // antar kantong sendiri. Difilter sekali di sini supaya semua sub-fungsi
+  // di bawah otomatis konsisten tanpa perlu diubah satu-satu.
+  const transaksiRiil = transaksi.filter(t => !t.is_transfer);
+
   const now = new Date();
-  const tabungan = hitungSkorTabungan(transaksi);
-  const budgetConsistency = hitungSkorKonsistensiBudget(budgets, transaksi, now.getMonth() + 1, now.getFullYear());
-  const tren = hitungSkorTrenPengeluaran(transaksi);
-  const diversifikasi = hitungSkorDiversifikasi(transaksi);
-  const konsistensiCatat = hitungSkorKonsistensiCatat(transaksi);
+  const tabungan = hitungSkorTabungan(transaksiRiil);
+  const budgetConsistency = hitungSkorKonsistensiBudget(budgets, transaksiRiil, now.getMonth() + 1, now.getFullYear());
+  const tren = hitungSkorTrenPengeluaran(transaksiRiil);
+  const diversifikasi = hitungSkorDiversifikasi(transaksiRiil);
+  const konsistensiCatat = hitungSkorKonsistensiCatat(transaksiRiil);
 
   const totalSkor = tabungan.skor + budgetConsistency.skor + tren.skor + diversifikasi.skor + konsistensiCatat.skor;
 
@@ -4036,9 +4054,20 @@ export default function App() {
   const handleEdit   = (t) => { setForm({ tipe:t.tipe, kategori:t.kategori, jumlah:t.jumlah, catatan:t.catatan||"", tanggal:t.tanggal, dompet_id:t.dompet_id||"" }); setEditId(t.id); setShowForm(true); setTab("transaksi"); };
 
   const summary = useMemo(() => {
-    const masuk = transaksi.filter(t=>t.tipe==="pemasukan").reduce((s,t)=>s+t.jumlah,0);
-    const keluar = transaksi.filter(t=>t.tipe==="pengeluaran").reduce((s,t)=>s+t.jumlah,0);
-    return { masuk, keluar, saldo:masuk-keluar };
+    // Statistik Pemasukan/Pengeluaran HARUS exclude transfer antar dompet —
+    // transfer bukan aktivitas keuangan riil, cuma pemindahan uang antar
+    // kantong sendiri. Kalau tidak di-exclude, transfer akan "menggembungkan"
+    // angka pemasukan & pengeluaran padahal tidak ada uang baru masuk/keluar.
+    const transaksiRiil = transaksi.filter(t => !t.is_transfer);
+    const masuk = transaksiRiil.filter(t=>t.tipe==="pemasukan").reduce((s,t)=>s+t.jumlah,0);
+    const keluar = transaksiRiil.filter(t=>t.tipe==="pengeluaran").reduce((s,t)=>s+t.jumlah,0);
+    // Saldo tetap dihitung dari SEMUA transaksi (termasuk transfer) — karena
+    // transfer net-nya nol terhadap total (uang cuma pindah dompet, tidak
+    // hilang), jadi memasukkannya tidak mengubah hasil, dan konsisten dengan
+    // cara saldo per-dompet dihitung di TabDompet.
+    const masukSemua = transaksi.filter(t=>t.tipe==="pemasukan").reduce((s,t)=>s+t.jumlah,0);
+    const keluarSemua = transaksi.filter(t=>t.tipe==="pengeluaran").reduce((s,t)=>s+t.jumlah,0);
+    return { masuk, keluar, saldo: masukSemua - keluarSemua };
   }, [transaksi]);
 
   const filtered = transaksi
@@ -4369,10 +4398,11 @@ export default function App() {
                       border: tx._pending ? `1.5px dashed ${th.gold}` : `1px solid ${th.borderSoft}`,
                       opacity: tx._pending ? 0.75 : 1,
                     }}>
-                      <div style={{ fontSize:22 }}>{ICONS[tx.kategori]||"📦"}</div>
+                      <div style={{ fontSize:22 }}>{tx.is_transfer ? "↔️" : (ICONS[tx.kategori]||"📦")}</div>
                       <div style={{ flex:1, minWidth:0 }}>
                         <div style={{ fontWeight:600, fontSize:14, color:th.text, display:"flex", alignItems:"center", gap:6 }}>
                           {tx.kategori}
+                          {tx.is_transfer && <span style={{ fontSize:9.5, background:th.textMuted+"22", color:th.textMuted, padding:"1px 6px", borderRadius:5, fontWeight:700, textTransform:"uppercase", letterSpacing:"0.03em" }}>Transfer</span>}
                           {tx._pending && <span style={{ fontSize:9.5, background:th.gold+"22", color:th.gold, padding:"1px 6px", borderRadius:5, fontWeight:700, textTransform:"uppercase", letterSpacing:"0.03em" }}>Menunggu sync</span>}
                         </div>
                         <div style={{ fontSize:12, color:th.textMuted, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>
