@@ -1,8 +1,3 @@
--- ============================================================
--- Migration 01: Tabel Dasar (Transaksi)
--- Jalankan PALING PERTAMA di Supabase SQL Editor
--- ============================================================
-
 CREATE TABLE transaksi (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
