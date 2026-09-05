@@ -1,8 +1,3 @@
--- ============================================================
--- Migration: Tabel Budget per Kategori
--- Jalankan di Supabase SQL Editor
--- ============================================================
-
 CREATE TABLE budget (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
