@@ -57,6 +57,43 @@ const offlineQueue = {
   },
 };
 
+// ── Helper: Recurring Transaction ────────────────────────────
+// Hitung tanggal jatuh tempo berikutnya berdasarkan frekuensi.
+function tanggalBerikutnya(tanggalDasar, frekuensi) {
+  const d = new Date(tanggalDasar);
+  if (frekuensi === "harian") d.setDate(d.getDate() + 1);
+  else if (frekuensi === "mingguan") d.setDate(d.getDate() + 7);
+  else if (frekuensi === "bulanan") d.setMonth(d.getMonth() + 1);
+  return d.toISOString().split("T")[0];
+}
+
+// Cek satu jadwal recurring: sudah waktunya dibuat transaksi baru atau belum.
+// Dipakai saat app dibuka — bukan cron job sungguhan (tidak ada backend),
+// jadi transaksi baru "terisi" begitu user membuka app setelah tanggal jatuh tempo lewat.
+function jadwalYangJatuhTempo(recurringList) {
+  const hariIni = new Date().toISOString().split("T")[0]; // inline, karena const today() didefinisikan lebih bawah di file ini
+  const hasil = [];
+
+  for (const r of recurringList) {
+    if (!r.aktif) continue;
+
+    // Titik cek pertama: kalau belum pernah dibuat sama sekali, tanggal_mulai
+    // ITU SENDIRI adalah kejadian pertama yang harus dicatat (bukan "hari
+    // setelah" tanggal_mulai). Setelah itu, tiap iterasi berikutnya baru
+    // maju satu periode dari titik terakhir.
+    let cursor = r.tanggal_terakhir_dibuat || r.tanggal_mulai;
+    let sudahPernahDibuat = !!r.tanggal_terakhir_dibuat;
+
+    while (cursor <= hariIni) {
+      hasil.push({ recurring: r, tanggal: cursor });
+      sudahPernahDibuat = true;
+      cursor = tanggalBerikutnya(cursor, r.frekuensi);
+      if (hasil.filter(h => h.recurring.id === r.id).length > 60) break; // safety valve, hindari infinite loop kalau data korup
+    }
+  }
+  return hasil;
+}
+
 const sb = {
   h: (token) => ({
     "Content-Type": "application/json",
@@ -149,6 +186,61 @@ const sb = {
       : `${SUPABASE_URL}/rest/v1/transaksi?order=tanggal.desc`;
     const r = await fetch(url, { headers: this.h(t) });
     return r.ok ? r.json() : [];
+  },
+
+  // ── Recurring Transaction ──
+  async fetchRecurring(t) {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/recurring?aktif=eq.true&order=created_at.desc`, { headers: this.h(t) });
+    return r.ok ? r.json() : [];
+  },
+  async insertRecurring(t, d) {
+    const payload = { ...d, user_id: getUserIdFromToken(t), dompet_id: d.dompet_id || null };
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/recurring`, { method: "POST", headers: this.h(t), body: JSON.stringify(payload) });
+    if (!r.ok) { console.error("Insert recurring gagal:", await r.text()); return null; }
+    return r.json();
+  },
+  async updateRecurring(t, id, d) {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/recurring?id=eq.${id}`, { method: "PATCH", headers: this.h(t), body: JSON.stringify(d) });
+    if (!r.ok) { console.error("Update recurring gagal:", await r.text()); return null; }
+    return r.json();
+  },
+  async removeRecurring(t, id) {
+    // Soft delete — set aktif = false, konsisten dengan pola dompet
+    await fetch(`${SUPABASE_URL}/rest/v1/recurring?id=eq.${id}`, {
+      method: "PATCH", headers: this.h(t), body: JSON.stringify({ aktif: false }),
+    });
+  },
+
+  // ── Savings Goal (Target Tabungan) ──
+  async fetchGoals(t) {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/savings_goal?aktif=eq.true&order=created_at.desc`, { headers: this.h(t) });
+    return r.ok ? r.json() : [];
+  },
+  async insertGoal(t, d) {
+    const payload = { ...d, user_id: getUserIdFromToken(t), dompet_id: d.dompet_id || null };
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/savings_goal`, { method: "POST", headers: this.h(t), body: JSON.stringify(payload) });
+    if (!r.ok) { console.error("Insert goal gagal:", await r.text()); return null; }
+    return r.json();
+  },
+  async updateGoal(t, id, d) {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/savings_goal?id=eq.${id}`, { method: "PATCH", headers: this.h(t), body: JSON.stringify(d) });
+    if (!r.ok) { console.error("Update goal gagal:", await r.text()); return null; }
+    return r.json();
+  },
+  async removeGoal(t, id) {
+    await fetch(`${SUPABASE_URL}/rest/v1/savings_goal?id=eq.${id}`, {
+      method: "PATCH", headers: this.h(t), body: JSON.stringify({ aktif: false }),
+    });
+  },
+  async fetchContributions(t, goalId) {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/savings_contribution?goal_id=eq.${goalId}&order=tanggal.desc`, { headers: this.h(t) });
+    return r.ok ? r.json() : [];
+  },
+  async insertContribution(t, d) {
+    const payload = { ...d, user_id: getUserIdFromToken(t) };
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/savings_contribution`, { method: "POST", headers: this.h(t), body: JSON.stringify(payload) });
+    if (!r.ok) { console.error("Insert kontribusi gagal:", await r.text()); return null; }
+    return r.json();
   },
 };
 
@@ -1651,6 +1743,698 @@ const DOMPET_IKONS = ["💰","💵","💴","💶","💷","🏦","🏛️","💳"
 const DOMPET_WARNAS = ["#B8860B","#1B5E42","#8C2F2F","#3D6E96","#6B4C8A","#A5486B","#B85C2E","#2D8A63","#8C6408","#5C584E"];
 
 // ── Tab Dompet ───────────────────────────────────────────────
+// ── Tab Recurring Transaction ────────────────────────────────
+// ── Tab Target Tabungan (Savings Goals) ──────────────────────
+function TabSavings({ dompet, token, showToast }) {
+  const { dark } = useTheme();
+  const t = tokens(dark);
+  const inp = mkInp(t);
+  const [goals, setGoals] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editItem, setEditItem] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({ nama: "", ikon: "🎯", target_nominal: "", dompet_id: "", target_tanggal: "" });
+
+  // Modal setor dana ke goal tertentu
+  const [showSetor, setShowSetor] = useState(null); // simpan goal object, atau null kalau tidak ada modal terbuka
+  const [jumlahSetor, setJumlahSetor] = useState("");
+  const [catatanSetor, setCatatanSetor] = useState("");
+
+  const loadGoals = () => {
+    setLoading(true);
+    sb.fetchGoals(token)
+      .then(d => setGoals(Array.isArray(d) ? d : []))
+      .catch(() => showToast("Gagal memuat target tabungan", "error"))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { loadGoals(); }, [token]);
+
+  const resetForm = () => {
+    setForm({ nama: "", ikon: "🎯", target_nominal: "", dompet_id: "", target_tanggal: "" });
+    setEditItem(null);
+    setShowForm(false);
+  };
+
+  const handleSimpan = async () => {
+    if (!form.nama || !form.target_nominal) { showToast("Lengkapi nama dan target nominal!", "error"); return; }
+    setSaving(true);
+    try {
+      const payload = {
+        nama: form.nama, ikon: form.ikon, target_nominal: Number(form.target_nominal),
+        dompet_id: form.dompet_id || null, target_tanggal: form.target_tanggal || null,
+      };
+      if (editItem) {
+        await sb.updateGoal(token, editItem.id, payload);
+        showToast("Target diperbarui ✓");
+      } else {
+        await sb.insertGoal(token, { ...payload, terkumpul: 0 });
+        showToast("Target tabungan dibuat ✓");
+      }
+      resetForm();
+      loadGoals();
+    } catch {
+      showToast("Gagal menyimpan target", "error");
+    }
+    setSaving(false);
+  };
+
+  const handleHapus = async (id) => {
+    if (!confirm("Hapus target tabungan ini? Riwayat setoran tidak akan terhapus dari catatan, tapi target tidak akan tampil lagi.")) return;
+    await sb.removeGoal(token, id);
+    showToast("Target dihapus");
+    loadGoals();
+  };
+
+  const handleEdit = (g) => {
+    setForm({ nama: g.nama, ikon: g.ikon, target_nominal: g.target_nominal, dompet_id: g.dompet_id || "", target_tanggal: g.target_tanggal || "" });
+    setEditItem(g);
+    setShowForm(true);
+  };
+
+  const handleSetor = async () => {
+    if (!jumlahSetor || Number(jumlahSetor) <= 0) { showToast("Masukkan jumlah setoran yang valid", "error"); return; }
+    setSaving(true);
+    try {
+      const goal = showSetor;
+      const nominal = Number(jumlahSetor);
+      await sb.insertContribution(token, { goal_id: goal.id, jumlah: nominal, catatan: catatanSetor, tanggal: today() });
+
+      const terkumpulBaru = goal.terkumpul + nominal;
+      const tercapaiSekarang = terkumpulBaru >= goal.target_nominal;
+      await sb.updateGoal(token, goal.id, { terkumpul: terkumpulBaru, tercapai: tercapaiSekarang });
+
+      showToast(tercapaiSekarang ? `🎉 Target "${goal.nama}" tercapai!` : "Setoran dicatat ✓");
+      setShowSetor(null);
+      setJumlahSetor("");
+      setCatatanSetor("");
+      loadGoals();
+    } catch {
+      showToast("Gagal mencatat setoran", "error");
+    }
+    setSaving(false);
+  };
+
+  const IKON_GOAL = ["🎯","🏖️","🏠","🚗","💻","📱","🎓","💍","✈️","🏥","👶","🎉"];
+
+  return (
+    <div>
+      <button className="btn-press ripple-container" onMouseDown={createRipple} onClick={() => { setShowForm(!showForm); setEditItem(null); }} style={{
+        width: "100%", padding: "12px", borderRadius: 10, border: "none", marginBottom: 16,
+        background: `linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`, color: "#181820",
+        fontWeight: 700, fontSize: 13.5, cursor: "pointer",
+      }}>
+        + Buat Target Tabungan
+      </button>
+
+      {/* Form Buat/Edit Goal */}
+      {showForm && (
+        <div className="card-enter" style={{ background: t.surface, borderRadius: 12, padding: 20, marginBottom: 16, boxShadow: t.cardShadow, border: `1px solid ${t.borderSoft}` }}>
+          <div style={{ fontFamily: t.fontDisplay, fontWeight: 600, fontSize: 15.5, marginBottom: 14, color: t.text }}>
+            {editItem ? "Ubah Target" : "Target Baru"}
+          </div>
+
+          <div style={{ fontSize: 12, color: t.textMuted, marginBottom: 8 }}>Pilih ikon:</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
+            {IKON_GOAL.map(ik => (
+              <button key={ik} className="btn-press" onClick={() => setForm(f => ({ ...f, ikon: ik }))} style={{
+                width: 36, height: 36, borderRadius: 9, border: "2px solid",
+                borderColor: form.ikon === ik ? t.gold : t.border,
+                background: form.ikon === ik ? (dark ? "rgba(212,160,23,0.12)" : "rgba(184,134,11,0.08)") : t.surface2,
+                fontSize: 17, cursor: "pointer",
+              }}>{ik}</button>
+            ))}
+          </div>
+
+          <input placeholder="Nama target (misal: Liburan Bali, DP Rumah)" value={form.nama} onChange={e => setForm(f => ({ ...f, nama: e.target.value }))} style={{ ...inp, marginBottom: 10 }} />
+          <input type="number" placeholder="Target nominal (Rp)" value={form.target_nominal} onChange={e => setForm(f => ({ ...f, target_nominal: e.target.value }))} style={{ ...inp, marginBottom: 10, fontFamily: t.fontMono }} />
+
+          {dompet.length > 0 && (
+            <select value={form.dompet_id} onChange={e => setForm(f => ({ ...f, dompet_id: e.target.value }))} style={{ ...inp, marginBottom: 10 }}>
+              <option value="">Kaitkan ke dompet (opsional)</option>
+              {dompet.map(d => <option key={d.id} value={d.id}>{d.ikon} {d.nama}</option>)}
+            </select>
+          )}
+
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ fontSize: 12, fontWeight: 600, color: t.textSub, marginBottom: 6, display: "block" }}>Target tanggal (opsional)</label>
+            <input type="date" value={form.target_tanggal} onChange={e => setForm(f => ({ ...f, target_tanggal: e.target.value }))} style={{ ...inp, colorScheme: dark ? "dark" : "light" }} />
+          </div>
+
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn-press" onClick={resetForm} style={{ flex: 1, padding: 11, borderRadius: 9, border: `1.5px solid ${t.border}`, background: t.surface2, color: t.textSub, fontWeight: 600, cursor: "pointer", fontSize: 13 }}>Batal</button>
+            <button className="btn-press" onClick={handleSimpan} disabled={saving} style={{
+              flex: 2, padding: 11, borderRadius: 9, border: "none",
+              background: saving ? t.surface2 : `linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`,
+              color: saving ? t.textMuted : "#181820", fontWeight: 700, cursor: "pointer", fontSize: 13,
+            }}>{saving ? "Menyimpan..." : editItem ? "Simpan Perubahan" : "Buat Target"}</button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Setor Dana */}
+      {showSetor && (
+        <div className="glass-overlay" style={{
+          position: "fixed", inset: 0, background: dark ? "rgba(10,10,15,0.55)" : "rgba(32,32,28,0.35)", zIndex: 1000,
+          display: "flex", alignItems: "flex-end", justifyContent: "center", animation: "fadeIn 0.2s ease-out",
+        }} onClick={() => setShowSetor(null)}>
+          <div className="card-enter glass-modal" onClick={e => e.stopPropagation()} style={{
+            borderRadius: "20px 20px 0 0", padding: 24, width: "100%", maxWidth: 480,
+            boxShadow: dark ? "0 -8px 40px rgba(0,0,0,0.5)" : "0 -8px 40px rgba(32,32,28,0.15)",
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+              <div style={{ fontWeight: 700, fontSize: 16, color: t.text }}>{showSetor.ikon} Setor ke "{showSetor.nama}"</div>
+              <button className="btn-press" onClick={() => setShowSetor(null)} style={{ background: t.surface2, border: "none", borderRadius: 8, width: 28, height: 28, cursor: "pointer", color: t.textSub, fontSize: 16 }}>✕</button>
+            </div>
+            <input type="number" placeholder="Jumlah setoran (Rp)" value={jumlahSetor} onChange={e => setJumlahSetor(e.target.value)} style={{ ...inp, marginBottom: 10, fontFamily: t.fontMono }} autoFocus />
+            <input placeholder="Catatan (opsional)" value={catatanSetor} onChange={e => setCatatanSetor(e.target.value)} style={{ ...inp, marginBottom: 18 }} />
+            <button className="btn-press ripple-container" onMouseDown={createRipple} onClick={handleSetor} disabled={saving} style={{
+              width: "100%", padding: 13, borderRadius: 9, border: "none",
+              background: saving ? t.surface2 : `linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`,
+              color: saving ? t.textMuted : "#181820", fontWeight: 700, cursor: "pointer", fontSize: 14,
+            }}>{saving ? "Menyimpan..." : "Catat Setoran"}</button>
+          </div>
+        </div>
+      )}
+
+      {/* List Goals */}
+      {loading ? (
+        <><div className="skeleton" style={{ height: 140, borderRadius: 12, marginBottom: 12 }} /><div className="skeleton" style={{ height: 140, borderRadius: 12 }} /></>
+      ) : goals.length === 0 ? (
+        <EmptyState icon="🎯" title="Belum ada target tabungan" subtitle="Buat target untuk liburan, DP rumah, atau tujuan lainnya" />
+      ) : goals.map((g, i) => {
+        const persen = Math.min(100, (g.terkumpul / g.target_nominal) * 100);
+        const sisaNominal = Math.max(0, g.target_nominal - g.terkumpul);
+        const namaDompet = dompet.find(d => d.id === g.dompet_id);
+
+        let estimasi = null;
+        if (g.target_tanggal && !g.tercapai) {
+          const hariTersisa = Math.ceil((new Date(g.target_tanggal) - new Date()) / (1000 * 60 * 60 * 24));
+          if (hariTersisa > 0) estimasi = `${hariTersisa} hari lagi`;
+          else if (hariTersisa === 0) estimasi = "Hari ini deadline-nya";
+          else estimasi = "Sudah lewat target tanggal";
+        }
+
+        return (
+          <div key={g.id} className="list-item hover-lift" style={{
+            animationDelay: `${i * 0.05}s`, animationFillMode: "backwards",
+            background: t.surface, borderRadius: 14, padding: 18, marginBottom: 12,
+            boxShadow: t.cardShadow, border: g.tercapai ? `1.5px solid ${t.green}` : `1px solid ${t.borderSoft}`,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
+              <div style={{
+                width: 44, height: 44, borderRadius: 12, flexShrink: 0, fontSize: 22,
+                background: g.tercapai ? (dark ? "rgba(45,138,99,0.15)" : "rgba(27,94,66,0.08)") : t.surface2,
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}>{g.tercapai ? "🏆" : g.ikon}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 14.5, color: t.text }}>{g.nama}</div>
+                <div style={{ fontSize: 11.5, color: t.textMuted, marginTop: 2 }}>
+                  {namaDompet ? `${namaDompet.ikon} ${namaDompet.nama}` : "Tidak terkait dompet"}
+                  {estimasi && ` · ${estimasi}`}
+                </div>
+              </div>
+              {g.tercapai && (
+                <div style={{ fontSize: 10.5, fontWeight: 700, color: t.green, background: dark ? "rgba(45,138,99,0.15)" : "rgba(27,94,66,0.08)", padding: "4px 10px", borderRadius: 99 }}>TERCAPAI</div>
+              )}
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 6 }}>
+              <span className="num-tabular" style={{ fontFamily: t.fontMono, fontWeight: 700, color: g.tercapai ? t.green : t.gold }}>{formatRp(g.terkumpul)}</span>
+              <span style={{ color: t.textMuted }}>dari {formatRp(g.target_nominal)}</span>
+            </div>
+            <div style={{ height: 8, background: t.surface2, borderRadius: 99, overflow: "hidden", marginBottom: 12 }}>
+              <div style={{
+                height: 8, borderRadius: 99, width: `${persen}%`, transition: "width 0.8s cubic-bezier(0.22,1,0.36,1)",
+                background: g.tercapai ? t.green : `linear-gradient(90deg, ${ACCENT_GOLD}, ${ACCENT_GOLD_L})`,
+              }} />
+            </div>
+
+            {!g.tercapai && (
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="btn-press" onClick={() => handleEdit(g)} style={{ fontSize: 11.5, padding: "7px 12px", background: t.surface2, border: "none", borderRadius: 7, cursor: "pointer", color: t.textSub, fontWeight: 600 }}>Edit</button>
+                <button className="btn-press" onClick={() => handleHapus(g.id)} style={{ fontSize: 11.5, padding: "7px 12px", background: dark ? "rgba(184,69,69,0.12)" : "rgba(140,47,47,0.08)", border: "none", borderRadius: 7, cursor: "pointer", color: t.red, fontWeight: 600 }}>Hapus</button>
+                <button className="btn-press ripple-container" onMouseDown={createRipple} onClick={() => setShowSetor(g)} style={{
+                  flex: 1, fontSize: 12, padding: "7px 12px", borderRadius: 7, border: "none", cursor: "pointer",
+                  background: `linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`, color: "#181820", fontWeight: 700,
+                }}>+ Setor Dana</button>
+              </div>
+            )}
+            {g.tercapai && (
+              <button className="btn-press" onClick={() => handleHapus(g.id)} style={{ fontSize: 11.5, padding: "7px 12px", background: dark ? "rgba(184,69,69,0.12)" : "rgba(140,47,47,0.08)", border: "none", borderRadius: 7, cursor: "pointer", color: t.red, fontWeight: 600 }}>Hapus</button>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function TabRecurring({ recurring, dompet, token, showToast, onRecurringChange }) {
+  const { dark } = useTheme();
+  const t = tokens(dark);
+  const inp = mkInp(t);
+  const [showForm, setShowForm] = useState(false);
+  const [editItem, setEditItem] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [form, setForm] = useState({
+    tipe: "pengeluaran", kategori: "", jumlah: "", catatan: "",
+    dompet_id: "", frekuensi: "bulanan", tanggal_mulai: today(),
+  });
+
+  const resetForm = () => {
+    setForm({ tipe: "pengeluaran", kategori: "", jumlah: "", catatan: "", dompet_id: "", frekuensi: "bulanan", tanggal_mulai: today() });
+    setEditItem(null);
+    setShowForm(false);
+  };
+
+  const handleSimpan = async () => {
+    if (!form.kategori || !form.jumlah) { showToast("Lengkapi kategori dan jumlah!", "error"); return; }
+    setLoading(true);
+    try {
+      const payload = {
+        tipe: form.tipe, kategori: form.kategori, jumlah: Number(form.jumlah),
+        catatan: form.catatan, dompet_id: form.dompet_id || null,
+        frekuensi: form.frekuensi, tanggal_mulai: form.tanggal_mulai,
+      };
+      if (editItem) {
+        await sb.updateRecurring(token, editItem.id, payload);
+        showToast("Jadwal diperbarui ✓");
+      } else {
+        await sb.insertRecurring(token, payload);
+        showToast("Jadwal berulang dibuat ✓");
+      }
+      resetForm();
+      onRecurringChange();
+    } catch {
+      showToast("Gagal menyimpan jadwal", "error");
+    }
+    setLoading(false);
+  };
+
+  const handleHapus = async (id) => {
+    if (!confirm("Hapus jadwal berulang ini? Transaksi yang sudah tercatat tidak akan terhapus.")) return;
+    await sb.removeRecurring(token, id);
+    showToast("Jadwal dihapus");
+    onRecurringChange();
+  };
+
+  const handleEdit = (r) => {
+    setForm({
+      tipe: r.tipe, kategori: r.kategori, jumlah: r.jumlah, catatan: r.catatan || "",
+      dompet_id: r.dompet_id || "", frekuensi: r.frekuensi, tanggal_mulai: r.tanggal_mulai,
+    });
+    setEditItem(r);
+    setShowForm(true);
+  };
+
+  const labelFrekuensi = { harian: "Setiap hari", mingguan: "Setiap minggu", bulanan: "Setiap bulan" };
+
+  return (
+    <div>
+      <button className="btn-press ripple-container" onMouseDown={createRipple} onClick={() => { setShowForm(!showForm); setEditItem(null); }} style={{
+        width: "100%", padding: "12px", borderRadius: 10, border: "none", marginBottom: 16,
+        background: `linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`, color: "#181820",
+        fontWeight: 700, fontSize: 13.5, cursor: "pointer",
+      }}>
+        + Buat Jadwal Berulang
+      </button>
+
+      {showForm && (
+        <div className="card-enter" style={{ background: t.surface, borderRadius: 12, padding: 20, marginBottom: 16, boxShadow: t.cardShadow, border: `1px solid ${t.borderSoft}` }}>
+          <div style={{ fontFamily: t.fontDisplay, fontWeight: 600, fontSize: 15.5, marginBottom: 14, color: t.text }}>
+            {editItem ? "Ubah Jadwal" : "Jadwal Baru"}
+          </div>
+
+          <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+            {["pengeluaran", "pemasukan"].map(tp => (
+              <button key={tp} className="btn-press" onClick={() => setForm(f => ({ ...f, tipe: tp, kategori: "" }))} style={{
+                flex: 1, padding: "10px", borderRadius: 9, border: "1.5px solid",
+                borderColor: form.tipe === tp ? (tp === "pemasukan" ? t.green : t.red) : t.border,
+                background: form.tipe === tp ? (tp === "pemasukan" ? (dark ? "#0d2b1e" : "#EDF7F1") : (dark ? "#301414" : "#FBEEEE")) : t.surface2,
+                color: form.tipe === tp ? (tp === "pemasukan" ? t.green : t.red) : t.textMuted,
+                fontWeight: 600, fontSize: 13, cursor: "pointer",
+              }}>
+                {tp === "pemasukan" ? "↑ Pemasukan" : "↓ Pengeluaran"}
+              </button>
+            ))}
+          </div>
+
+          <select value={form.kategori} onChange={e => setForm(f => ({ ...f, kategori: e.target.value }))} style={{ ...inp, marginBottom: 10 }}>
+            <option value="">Pilih Kategori</option>
+            {CATS[form.tipe].map(k => <option key={k}>{k}</option>)}
+          </select>
+          <input type="number" placeholder="Jumlah (Rp)" value={form.jumlah} onChange={e => setForm(f => ({ ...f, jumlah: e.target.value }))} style={{ ...inp, marginBottom: 10, fontFamily: t.fontMono }} />
+          <input type="text" placeholder="Catatan (misal: Gaji bulanan, Netflix, dll)" value={form.catatan} onChange={e => setForm(f => ({ ...f, catatan: e.target.value }))} style={{ ...inp, marginBottom: 10 }} />
+
+          {dompet.length > 0 && (
+            <select value={form.dompet_id} onChange={e => setForm(f => ({ ...f, dompet_id: e.target.value }))} style={{ ...inp, marginBottom: 10 }}>
+              <option value="">Pilih Dompet (opsional)</option>
+              {dompet.map(d => <option key={d.id} value={d.id}>{d.ikon} {d.nama}</option>)}
+            </select>
+          )}
+
+          <div style={{ fontSize: 12, fontWeight: 600, color: t.textSub, marginBottom: 8 }}>Ulangi setiap:</div>
+          <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+            {["harian", "mingguan", "bulanan"].map(f => (
+              <button key={f} className="btn-press" onClick={() => setForm(fm => ({ ...fm, frekuensi: f }))} style={{
+                flex: 1, padding: "9px", borderRadius: 8, border: "1.5px solid",
+                borderColor: form.frekuensi === f ? t.gold : t.border,
+                background: form.frekuensi === f ? (dark ? "rgba(212,160,23,0.12)" : "rgba(184,134,11,0.08)") : t.surface2,
+                color: form.frekuensi === f ? t.gold : t.textMuted,
+                fontWeight: 600, fontSize: 12, cursor: "pointer", textTransform: "capitalize",
+              }}>{f}</button>
+            ))}
+          </div>
+
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ fontSize: 12, fontWeight: 600, color: t.textSub, marginBottom: 6, display: "block" }}>Mulai dari tanggal</label>
+            <input type="date" value={form.tanggal_mulai} onChange={e => setForm(f => ({ ...f, tanggal_mulai: e.target.value }))} style={{ ...inp, colorScheme: dark ? "dark" : "light" }} />
+          </div>
+
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn-press" onClick={resetForm} style={{ flex: 1, padding: 11, borderRadius: 9, border: `1.5px solid ${t.border}`, background: t.surface2, color: t.textSub, fontWeight: 600, cursor: "pointer", fontSize: 13 }}>Batal</button>
+            <button className="btn-press" onClick={handleSimpan} disabled={loading} style={{
+              flex: 2, padding: 11, borderRadius: 9, border: "none",
+              background: loading ? t.surface2 : `linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`,
+              color: loading ? t.textMuted : "#181820", fontWeight: 700, cursor: "pointer", fontSize: 13,
+            }}>{loading ? "Menyimpan..." : editItem ? "Simpan Perubahan" : "Buat Jadwal"}</button>
+          </div>
+        </div>
+      )}
+
+      {recurring.length === 0 ? (
+        <EmptyState icon="↻" title="Belum ada jadwal berulang" subtitle="Cocok untuk gaji, langganan, atau cicilan rutin" />
+      ) : recurring.map((r, i) => {
+        const namaDompet = dompet.find(d => d.id === r.dompet_id);
+        return (
+          <div key={r.id} className="list-item hover-lift" style={{
+            animationDelay: `${i * 0.05}s`, animationFillMode: "backwards",
+            background: t.surface, borderRadius: 11, padding: "14px 16px", marginBottom: 10,
+            boxShadow: t.cardShadow, border: `1px solid ${t.borderSoft}`,
+            display: "flex", alignItems: "center", gap: 12,
+          }}>
+            <div style={{ fontSize: 22 }}>{ICONS[r.kategori] || "📦"}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 14, color: t.text }}>{r.kategori}</div>
+              <div style={{ fontSize: 12, color: t.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {r.catatan || "—"} · {labelFrekuensi[r.frekuensi]}
+                {namaDompet && ` · ${namaDompet.ikon} ${namaDompet.nama}`}
+              </div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              <div className="num-tabular" style={{ fontFamily: t.fontMono, fontWeight: 700, fontSize: 14, color: r.tipe === "pemasukan" ? t.green : t.red }}>
+                {r.tipe === "pemasukan" ? "+" : "−"}{formatRp(r.jumlah)}
+              </div>
+              <div style={{ display: "flex", gap: 6, marginTop: 6, justifyContent: "flex-end" }}>
+                <button className="btn-press" onClick={() => handleEdit(r)} style={{ fontSize: 11.5, background: t.surface2, border: "none", borderRadius: 5, padding: "3px 8px", cursor: "pointer", color: t.textSub, fontWeight: 600 }}>Edit</button>
+                <button className="btn-press" onClick={() => handleHapus(r.id)} style={{ fontSize: 11.5, background: dark ? "rgba(184,69,69,0.12)" : "rgba(140,47,47,0.08)", border: "none", borderRadius: 5, padding: "3px 8px", cursor: "pointer", color: t.red, fontWeight: 600 }}>Hapus</button>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Tab Target Tabungan (Savings Goals) ─────────────────────────
+function TabGoals({ goals, dompet, token, showToast, onGoalsChange }) {
+  const { dark } = useTheme();
+  const t = tokens(dark);
+  const inp = mkInp(t);
+  const [showForm, setShowForm] = useState(false);
+  const [editItem, setEditItem] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [expandedId, setExpandedId] = useState(null); // goal yang lagi dibuka detail kontribusinya
+  const [kontribusiMap, setKontribusiMap] = useState({}); // { goalId: [ ...kontribusi ] }
+  const [showKontribusiForm, setShowKontribusiForm] = useState(null); // goalId yang lagi diisi kontribusi
+  const [jumlahKontribusi, setJumlahKontribusi] = useState("");
+
+  const [form, setForm] = useState({
+    nama: "", ikon: "🎯", warna: t.gold, target_nominal: "", dompet_id: "", target_tanggal: "",
+  });
+
+  const GOAL_IKONS = ["🎯", "✈️", "🏠", "🚗", "💍", "🎓", "🏥", "📱", "💻", "🛡️", "🐷", "🎁"];
+  const GOAL_WARNAS = ["#B8860B", "#1B5E42", "#8C2F2F", "#3D6E96", "#6B4C8A", "#A5486B", "#B85C2E", "#2D8A63"];
+
+  const resetForm = () => {
+    setForm({ nama: "", ikon: "🎯", warna: t.gold, target_nominal: "", dompet_id: "", target_tanggal: "" });
+    setEditItem(null);
+    setShowForm(false);
+  };
+
+  const handleSimpan = async () => {
+    if (!form.nama || !form.target_nominal) { showToast("Lengkapi nama dan target nominal!", "error"); return; }
+    setLoading(true);
+    try {
+      const payload = {
+        nama: form.nama, ikon: form.ikon, warna: form.warna,
+        target_nominal: Number(form.target_nominal),
+        dompet_id: form.dompet_id || null,
+        target_tanggal: form.target_tanggal || null,
+      };
+      if (editItem) {
+        await sb.updateGoal(token, editItem.id, payload);
+        showToast("Target diperbarui ✓");
+      } else {
+        await sb.insertGoal(token, payload);
+        showToast("Target tabungan dibuat ✓");
+      }
+      resetForm();
+      onGoalsChange();
+    } catch {
+      showToast("Gagal menyimpan target", "error");
+    }
+    setLoading(false);
+  };
+
+  const handleHapus = async (id) => {
+    if (!confirm("Hapus target tabungan ini? Riwayat kontribusi juga akan hilang.")) return;
+    await sb.removeGoal(token, id);
+    showToast("Target dihapus");
+    onGoalsChange();
+  };
+
+  const handleEdit = (g) => {
+    setForm({
+      nama: g.nama, ikon: g.ikon, warna: g.warna,
+      target_nominal: g.target_nominal, dompet_id: g.dompet_id || "", target_tanggal: g.target_tanggal || "",
+    });
+    setEditItem(g);
+    setShowForm(true);
+  };
+
+  const toggleExpand = async (goalId) => {
+    if (expandedId === goalId) { setExpandedId(null); return; }
+    setExpandedId(goalId);
+    if (!kontribusiMap[goalId]) {
+      const data = await sb.fetchContributions(token, goalId);
+      setKontribusiMap(prev => ({ ...prev, [goalId]: Array.isArray(data) ? data : [] }));
+    }
+  };
+
+  const handleTambahKontribusi = async (goal) => {
+    const jumlah = Number(jumlahKontribusi);
+    if (!jumlah || jumlah <= 0) { showToast("Masukkan jumlah yang valid", "error"); return; }
+    setLoading(true);
+    try {
+      await sb.insertContribution(token, { goal_id: goal.id, jumlah, tanggal: today() });
+      const terkumpulBaru = goal.terkumpul + jumlah;
+      const tercapai = terkumpulBaru >= goal.target_nominal;
+      await sb.updateGoal(token, goal.id, { terkumpul: terkumpulBaru, tercapai });
+
+      if (tercapai && !goal.tercapai) {
+        showToast(`🎉 Target "${goal.nama}" tercapai!`);
+      } else {
+        showToast("Kontribusi ditambahkan ✓");
+      }
+
+      setJumlahKontribusi("");
+      setShowKontribusiForm(null);
+      onGoalsChange();
+      // Refresh kontribusi list kalau sedang expanded
+      if (expandedId === goal.id) {
+        const data = await sb.fetchContributions(token, goal.id);
+        setKontribusiMap(prev => ({ ...prev, [goal.id]: Array.isArray(data) ? data : [] }));
+      }
+    } catch {
+      showToast("Gagal menambah kontribusi", "error");
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div>
+      <button className="btn-press ripple-container" onMouseDown={createRipple} onClick={() => { setShowForm(!showForm); setEditItem(null); }} style={{
+        width: "100%", padding: "12px", borderRadius: 10, border: "none", marginBottom: 16,
+        background: `linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`, color: "#181820",
+        fontWeight: 700, fontSize: 13.5, cursor: "pointer",
+      }}>
+        + Buat Target Tabungan
+      </button>
+
+      {showForm && (
+        <div className="card-enter" style={{ background: t.surface, borderRadius: 12, padding: 20, marginBottom: 16, boxShadow: t.cardShadow, border: `1px solid ${t.borderSoft}` }}>
+          <div style={{ fontFamily: t.fontDisplay, fontWeight: 600, fontSize: 15.5, marginBottom: 14, color: t.text }}>
+            {editItem ? "Ubah Target" : "Target Baru"}
+          </div>
+
+          <div style={{ fontSize: 12, color: t.textMuted, marginBottom: 8 }}>Ikon:</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
+            {GOAL_IKONS.map(ik => (
+              <button key={ik} className="btn-press" onClick={() => setForm(f => ({ ...f, ikon: ik }))} style={{
+                width: 36, height: 36, borderRadius: 10, border: "2px solid",
+                borderColor: form.ikon === ik ? form.warna : t.border,
+                background: form.ikon === ik ? form.warna + "22" : t.surface2,
+                fontSize: 18, cursor: "pointer",
+              }}>{ik}</button>
+            ))}
+          </div>
+
+          <div style={{ fontSize: 12, color: t.textMuted, marginBottom: 8 }}>Warna:</div>
+          <div style={{ display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap" }}>
+            {GOAL_WARNAS.map(w => (
+              <button key={w} className="btn-press" onClick={() => setForm(f => ({ ...f, warna: w }))} style={{
+                width: 26, height: 26, borderRadius: "50%", border: "3px solid",
+                borderColor: form.warna === w ? "#fff" : "transparent",
+                background: w, cursor: "pointer",
+                boxShadow: form.warna === w ? `0 0 0 2px ${w}` : "none",
+              }} />
+            ))}
+          </div>
+
+          <input placeholder="Nama target (misal: Liburan Bali)" value={form.nama} onChange={e => setForm(f => ({ ...f, nama: e.target.value }))} style={{ ...inp, marginBottom: 10 }} />
+          <input type="number" placeholder="Target nominal (Rp)" value={form.target_nominal} onChange={e => setForm(f => ({ ...f, target_nominal: e.target.value }))} style={{ ...inp, marginBottom: 10, fontFamily: t.fontMono }} />
+
+          {dompet.length > 0 && (
+            <select value={form.dompet_id} onChange={e => setForm(f => ({ ...f, dompet_id: e.target.value }))} style={{ ...inp, marginBottom: 10 }}>
+              <option value="">Kaitkan ke Dompet (opsional)</option>
+              {dompet.map(d => <option key={d.id} value={d.id}>{d.ikon} {d.nama}</option>)}
+            </select>
+          )}
+
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ fontSize: 12, fontWeight: 600, color: t.textSub, marginBottom: 6, display: "block" }}>Target tanggal (opsional)</label>
+            <input type="date" value={form.target_tanggal} onChange={e => setForm(f => ({ ...f, target_tanggal: e.target.value }))} style={{ ...inp, colorScheme: dark ? "dark" : "light" }} />
+          </div>
+
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn-press" onClick={resetForm} style={{ flex: 1, padding: 11, borderRadius: 9, border: `1.5px solid ${t.border}`, background: t.surface2, color: t.textSub, fontWeight: 600, cursor: "pointer", fontSize: 13 }}>Batal</button>
+            <button className="btn-press" onClick={handleSimpan} disabled={loading} style={{
+              flex: 2, padding: 11, borderRadius: 9, border: "none",
+              background: loading ? t.surface2 : `linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`,
+              color: loading ? t.textMuted : "#181820", fontWeight: 700, cursor: "pointer", fontSize: 13,
+            }}>{loading ? "Menyimpan..." : editItem ? "Simpan Perubahan" : "Buat Target"}</button>
+          </div>
+        </div>
+      )}
+
+      {goals.length === 0 ? (
+        <EmptyState icon="🎯" title="Belum ada target tabungan" subtitle="Buat target untuk liburan, dana darurat, atau impian lainnya" />
+      ) : goals.map((g, i) => {
+        const persen = Math.min(100, (g.terkumpul / g.target_nominal) * 100);
+        const sisa = Math.max(0, g.target_nominal - g.terkumpul);
+        const namaDompet = dompet.find(d => d.id === g.dompet_id);
+        const expanded = expandedId === g.id;
+
+        return (
+          <div key={g.id} className="list-item hover-lift" style={{
+            animationDelay: `${i * 0.05}s`, animationFillMode: "backwards",
+            background: t.surface, borderRadius: 14, padding: 18, marginBottom: 12,
+            boxShadow: t.cardShadow, border: `1px solid ${g.tercapai ? g.warna : t.borderSoft}`,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+              <div style={{
+                width: 46, height: 46, borderRadius: 12, background: g.warna + "22",
+                border: `2px solid ${g.warna}33`, display: "flex", alignItems: "center",
+                justifyContent: "center", fontSize: 22, flexShrink: 0,
+              }}>{g.tercapai ? "🏆" : g.ikon}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700, fontSize: 14.5, color: t.text }}>{g.nama}</div>
+                <div style={{ fontSize: 11.5, color: t.textMuted, marginTop: 2 }}>
+                  {namaDompet ? `${namaDompet.ikon} ${namaDompet.nama}` : "Tanpa dompet"}
+                  {g.target_tanggal && ` · target ${new Date(g.target_tanggal).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })}`}
+                </div>
+              </div>
+              {g.tercapai && (
+                <span style={{ fontSize: 10, background: g.warna + "22", color: g.warna, padding: "3px 9px", borderRadius: 99, fontWeight: 700, textTransform: "uppercase" }}>Tercapai</span>
+              )}
+            </div>
+
+            <div style={{ marginTop: 14 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                <span className="num-tabular" style={{ fontFamily: t.fontMono, fontWeight: 700, fontSize: 15, color: g.warna }}>{formatRp(g.terkumpul)}</span>
+                <span style={{ fontSize: 12, color: t.textMuted }}>dari {formatRp(g.target_nominal)}</span>
+              </div>
+              <div style={{ height: 8, background: t.surface2, borderRadius: 99, overflow: "hidden" }}>
+                <div style={{ height: 8, borderRadius: 99, background: g.warna, width: `${persen}%`, transition: "width 0.6s cubic-bezier(0.22,1,0.36,1)" }} />
+              </div>
+              <div style={{ fontSize: 11, color: t.textMuted, marginTop: 6 }}>
+                {g.tercapai ? "Target sudah tercapai! 🎉" : `${persen.toFixed(0)}% · sisa ${formatRp(sisa)}`}
+              </div>
+            </div>
+
+            {/* Form tambah kontribusi */}
+            {showKontribusiForm === g.id && (
+              <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${t.borderSoft}`, display: "flex", gap: 8 }}>
+                <input
+                  type="number" placeholder="Jumlah setoran (Rp)" value={jumlahKontribusi}
+                  onChange={e => setJumlahKontribusi(e.target.value)}
+                  style={{ ...inp, flex: 1, fontFamily: t.fontMono }}
+                />
+                <button className="btn-press" onClick={() => handleTambahKontribusi(g)} disabled={loading} style={{
+                  padding: "0 16px", borderRadius: 9, border: "none",
+                  background: `linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`, color: "#181820",
+                  fontWeight: 700, fontSize: 13, cursor: "pointer",
+                }}>Tambah</button>
+              </div>
+            )}
+
+            {/* Riwayat kontribusi (expandable) */}
+            {expanded && (
+              <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${t.borderSoft}` }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: t.textSub, marginBottom: 8 }}>Riwayat Setoran</div>
+                {(kontribusiMap[g.id] || []).length === 0 ? (
+                  <div style={{ fontSize: 12, color: t.textMuted }}>Belum ada setoran tercatat</div>
+                ) : (kontribusiMap[g.id] || []).map(k => (
+                  <div key={k.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, padding: "6px 0", borderBottom: `1px solid ${t.borderSoft}` }}>
+                    <span style={{ color: t.textMuted }}>{new Date(k.tanggal).toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" })}</span>
+                    <span className="num-tabular" style={{ fontFamily: t.fontMono, color: g.warna, fontWeight: 600 }}>+{formatRp(k.jumlah)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 6, marginTop: 14 }}>
+              {!g.tercapai && (
+                <button className="btn-press" onClick={() => setShowKontribusiForm(showKontribusiForm === g.id ? null : g.id)} style={{
+                  flex: 1, padding: "7px", borderRadius: 8, border: "none",
+                  background: dark ? "rgba(212,160,23,0.12)" : "rgba(184,134,11,0.08)", color: t.gold,
+                  fontWeight: 600, fontSize: 11.5, cursor: "pointer",
+                }}>+ Setor</button>
+              )}
+              <button className="btn-press" onClick={() => toggleExpand(g.id)} style={{
+                flex: 1, padding: "7px", borderRadius: 8, border: `1.5px solid ${t.border}`,
+                background: t.surface2, color: t.textSub, fontWeight: 600, fontSize: 11.5, cursor: "pointer",
+              }}>{expanded ? "Sembunyikan" : "Riwayat"}</button>
+              <button className="btn-press" onClick={() => handleEdit(g)} style={{
+                padding: "7px 12px", borderRadius: 8, border: `1.5px solid ${t.border}`,
+                background: t.surface2, color: t.textSub, fontWeight: 600, fontSize: 11.5, cursor: "pointer",
+              }}>Edit</button>
+              <button className="btn-press" onClick={() => handleHapus(g.id)} style={{
+                padding: "7px 12px", borderRadius: 8, border: "none",
+                background: dark ? "rgba(184,69,69,0.12)" : "rgba(140,47,47,0.08)", color: t.red, fontWeight: 600, fontSize: 11.5, cursor: "pointer",
+              }}>Hapus</button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function TabDompet({ dompet, transaksi, token, showToast, onDompetChange, aktivDompetId, setAktivDompetId }) {
   const { dark } = useTheme();
   const t = tokens(dark);
@@ -2909,6 +3693,7 @@ export default function App() {
   const [email, setEmail]       = useState(()=>localStorage.getItem("sb_email")||"");
   const [transaksi, setTx]      = useState([]);
   const [dompet, setDompet]     = useState([]);
+  const [recurring, setRecurring] = useState([]);
   const [aktivDompetId, setAktivDompetId] = useState(null);
   const [loading, setLoading]   = useState(false);
   const [toast, setToast]       = useState({ msg:"", type:"ok" });
@@ -2995,20 +3780,68 @@ export default function App() {
 
   const showToast = (msg, type="ok") => { setToast({ msg, type }); setTimeout(()=>setToast({ msg:"", type:"ok" }), 2500); };
 
+  // Proses jadwal recurring yang sudah jatuh tempo — bikin transaksi baru
+  // untuk tiap periode yang terlewat, lalu update tanggal_terakhir_dibuat.
+  // Ini dijalankan setiap kali app dibuka (bukan cron sungguhan, karena tidak
+  // ada backend) — jadi transaksi baru "terisi" begitu user buka app setelah
+  // tanggal jatuh tempo lewat, bukan persis di jam 00:00 tanggal tersebut.
+  const prosesRecurringJatuhTempo = async (recurringList, currentToken) => {
+    const jatuhTempo = jadwalYangJatuhTempo(recurringList);
+    if (jatuhTempo.length === 0) return { dibuat: 0 };
+
+    let dibuat = 0;
+    // Kelompokkan per recurring id supaya update tanggal_terakhir_dibuat cukup sekali per jadwal
+    const perRecurring = {};
+    for (const item of jatuhTempo) {
+      if (!perRecurring[item.recurring.id]) perRecurring[item.recurring.id] = [];
+      perRecurring[item.recurring.id].push(item.tanggal);
+    }
+
+    for (const [recurringId, tanggalList] of Object.entries(perRecurring)) {
+      const r = recurringList.find(x => x.id === recurringId);
+      for (const tgl of tanggalList) {
+        try {
+          await sb.insert(currentToken, {
+            tipe: r.tipe, kategori: r.kategori, jumlah: r.jumlah,
+            catatan: r.catatan ? `${r.catatan} (otomatis)` : "Transaksi berulang otomatis",
+            tanggal: tgl, dompet_id: r.dompet_id,
+          });
+          dibuat++;
+        } catch { /* kalau satu gagal, lanjut ke tanggal berikutnya, jangan hentikan semua */ }
+      }
+      const tanggalTerakhir = tanggalList[tanggalList.length - 1];
+      await sb.updateRecurring(currentToken, recurringId, { tanggal_terakhir_dibuat: tanggalTerakhir });
+    }
+    return { dibuat };
+  };
+
   useEffect(() => {
     if (!token) return;
     setLoading(true);
     Promise.all([
       sb.fetchTransaksi(token),
       sb.fetchDompet(token),
-    ]).then(([tx, dm]) => {
+      sb.fetchRecurring(token),
+    ]).then(async ([tx, dm, rc]) => {
       const fetched = Array.isArray(tx) ? tx : [];
+      const recurringList = Array.isArray(rc) ? rc : [];
+      setDompet(Array.isArray(dm) ? dm : []);
+      setRecurring(recurringList);
+
+      // Cek & proses jadwal yang jatuh tempo, lalu refresh transaksi kalau ada yang dibuat
+      const { dibuat } = await prosesRecurringJatuhTempo(recurringList, token);
+      let transaksiFinal = fetched;
+      if (dibuat > 0) {
+        const ulang = await sb.fetchTransaksi(token);
+        transaksiFinal = Array.isArray(ulang) ? ulang : fetched;
+        showToast(`✓ ${dibuat} transaksi berulang otomatis tercatat`);
+      }
+
       // Gabungkan transaksi yang masih tertunda di offline queue (belum sempat tersinkron)
       const pending = offlineQueue.get()
-        .filter(q => !q.editId) // hanya transaksi baru, bukan edit, yang ditampilkan sebagai kartu "pending"
+        .filter(q => !q.editId)
         .map(q => ({ ...q, id: `local_${q.localId}`, _pending: true }));
-      setTx([...pending, ...fetched]);
-      setDompet(Array.isArray(dm) ? dm : []);
+      setTx([...pending, ...transaksiFinal]);
     }).catch(()=>showToast("Gagal memuat","error")).finally(()=>setLoading(false));
   }, [token]);
 
@@ -3027,6 +3860,10 @@ export default function App() {
   const reloadDompet = () => {
     sb.fetchDompet(token).then(d=>setDompet(Array.isArray(d)?d:[]));
     sb.fetchTransaksi(token).then(d=>setTx(Array.isArray(d)?d:[]));
+  };
+
+  const reloadRecurring = () => {
+    sb.fetchRecurring(token).then(d => setRecurring(Array.isArray(d) ? d : []));
   };
 
   const handleAuth   = (t,e) => { setToken(t); setEmail(e); };
@@ -3216,6 +4053,8 @@ export default function App() {
     { id:"dashboard", label:"Ringkasan", icon:"◧" },
     { id:"dompet",    label:"Dompet",    icon:"◈" },
     { id:"budget",    label:"Anggaran",  icon:"◎" },
+    { id:"tabungan",  label:"Tabungan",  icon:"🎯" },
+    { id:"berulang",  label:"Berulang",  icon:"↻" },
     { id:"skor",      label:"Skor Sehat", icon:"❖" },
     { id:"prediksi",  label:"Proyeksi",  icon:"◆" },
     { id:"ai",        label:"Penasihat AI", icon:"✦" },
@@ -3483,6 +4322,12 @@ export default function App() {
 
               {/* Tab: Budget */}
               {tab==="budget" && <TabBudget transaksi={transaksi} token={token} showToast={showToast} />}
+
+              {/* Tab: Target Tabungan */}
+              {tab==="tabungan" && <TabSavings dompet={dompet} token={token} showToast={showToast} />}
+
+              {/* Tab: Recurring Transaction */}
+              {tab==="berulang" && <TabRecurring recurring={recurring} dompet={dompet} token={token} showToast={showToast} onRecurringChange={reloadRecurring} />}
 
               {/* Tab: Skor Kesehatan Finansial */}
               {tab==="skor" && <TabHealthScore transaksi={transaksi} token={token} />}
