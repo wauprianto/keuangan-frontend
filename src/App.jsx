@@ -1,8 +1,3 @@
-// ============================================================
-// App.jsx — Keuangan Pribadi Full-Stack
-// Fitur: Grafik (Recharts) + AI (Gemini 3.1 Flash-Lite) + Hybrid ARIMA-LSTM
-// ============================================================
-
 import { useState, useEffect, useMemo, useRef, createContext, useContext } from "react";
 import {
   BarChart, Bar, LineChart, Line, AreaChart, Area,
