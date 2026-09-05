@@ -1,8 +1,3 @@
--- ============================================================
--- Migration 05: Tabel Target Tabungan (Savings Goals)
--- Jalankan SETELAH migration 01-04 di Supabase SQL Editor
--- ============================================================
-
 CREATE TABLE savings_goal (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
