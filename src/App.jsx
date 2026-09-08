@@ -562,6 +562,11 @@ function GlobalStyles({ dark }) {
         from { opacity: 0; transform: translateY(10px); }
         to   { opacity: 1; transform: translateY(0); }
       }
+      @keyframes staggerReveal {
+        0%   { opacity: 0; transform: translateY(16px) scale(0.96); }
+        60%  { opacity: 1; }
+        100% { opacity: 1; transform: translateY(0) scale(1); }
+      }
       @keyframes fadeIn {
         from { opacity: 0; }
         to   { opacity: 1; }
@@ -579,6 +584,12 @@ function GlobalStyles({ dark }) {
         0%, 80%, 100% { transform: translateY(0); }
         40% { transform: translateY(-6px); }
       }
+      @keyframes coinDrop {
+        0%   { transform: translateY(-10px) scale(0.85); opacity: 0.5; }
+        45%  { transform: translateY(0) scale(1); opacity: 1; }
+        70%  { transform: translateY(2px) scale(0.95); opacity: 0.85; }
+        100% { transform: translateY(-10px) scale(0.85); opacity: 0.5; }
+      }
       @keyframes slideOutLeft {
         from { transform: translateX(0); opacity: 1; max-height: 200px; margin-bottom: 10px; }
         to   { transform: translateX(-100%); opacity: 0; max-height: 0; margin-bottom: 0; }
@@ -588,9 +599,13 @@ function GlobalStyles({ dark }) {
         70%  { box-shadow: 0 0 0 9px rgba(212,160,23,0); }
         100% { box-shadow: 0 0 0 0 rgba(212,160,23,0); }
       }
-      @keyframes rippleEffect {
-        from { transform: scale(0); opacity: 0.45; }
-        to   { transform: scale(2.6); opacity: 0; }
+      @keyframes spin {
+        from { transform: rotate(0deg); }
+        to   { transform: rotate(360deg); }
+      }
+      @keyframes coinRipple {
+        from { transform: scale(0) rotate(0deg); opacity: 0.9; }
+        to   { transform: scale(2.8) rotate(35deg); opacity: 0; }
       }
       @keyframes pageEnter {
         from { opacity: 0; transform: translateY(14px) scale(0.99); }
@@ -614,10 +629,36 @@ function GlobalStyles({ dark }) {
         0%   { transform: translateX(-120%) skewX(-20deg); }
         100% { transform: translateX(220%) skewX(-20deg); }
       }
+      @keyframes meshDrift1 {
+        0%, 100% { transform: translate(0, 0) scale(1); }
+        50%      { transform: translate(4%, 6%) scale(1.08); }
+      }
+      @keyframes meshDrift2 {
+        0%, 100% { transform: translate(0, 0) scale(1); }
+        50%      { transform: translate(-5%, -4%) scale(1.1); }
+      }
+
+      /* Gradient mesh — dua blob radial gold/hijau bergerak sangat lambat,
+         dipakai di panel branding login. Organik, bukan statis, tapi cukup
+         halus untuk tidak mengganggu keterbacaan teks di atasnya. */
+      .gradient-mesh { position: absolute; inset: -20%; overflow: hidden; pointer-events: none; }
+      .gradient-mesh::before, .gradient-mesh::after {
+        content: ''; position: absolute; border-radius: 50%; filter: blur(60px);
+      }
+      .gradient-mesh::before {
+        width: 45%; height: 45%; top: 5%; left: 10%;
+        background: radial-gradient(circle, rgba(212,160,23,0.16), transparent 70%);
+        animation: meshDrift1 14s ease-in-out infinite;
+      }
+      .gradient-mesh::after {
+        width: 50%; height: 50%; bottom: 8%; right: 8%;
+        background: radial-gradient(circle, rgba(45,138,99,0.12), transparent 70%);
+        animation: meshDrift2 17s ease-in-out infinite;
+      }
 
       .tab-content { animation: pageEnter 0.36s cubic-bezier(0.22,1,0.36,1); }
       .card-enter  { animation: popIn 0.4s cubic-bezier(0.34,1.56,0.64,1); }
-      .list-item   { animation: fadeSlideIn 0.32s cubic-bezier(0.22,1,0.36,1); transition: transform 0.18s ease, box-shadow 0.18s ease; }
+      .list-item   { animation: staggerReveal 0.42s cubic-bezier(0.22,1,0.36,1); transition: transform 0.18s ease, box-shadow 0.18s ease; }
       .list-item:active { transform: scale(0.98); }
       .list-item.removing { animation: slideOutLeft 0.3s ease-in forwards; }
 
@@ -630,11 +671,18 @@ function GlobalStyles({ dark }) {
         }
       }
 
-      /* Ripple: elemen dengan class ini + posisi relative akan memunculkan lingkaran dari titik klik */
+      /* Ripple: elemen dengan class ini + posisi relative akan memunculkan lingkaran dari titik klik.
+         Bergaya "koin" — cincin gold tipis dengan sedikit rotasi & kilau, bukan lingkaran solid polos,
+         supaya menyatu dengan tema Buku Kas alih-alih terasa seperti Material Design generik. */
       .ripple-container { position: relative; overflow: hidden; }
       .ripple {
-        position: absolute; border-radius: 50%; background: currentColor;
-        pointer-events: none; animation: rippleEffect 0.6s ease-out;
+        position: absolute; border-radius: 50%; pointer-events: none;
+        background: radial-gradient(circle,
+          transparent 34%,
+          rgba(212,160,23,0.35) 40%,
+          rgba(212,160,23,0.12) 55%,
+          transparent 72%);
+        animation: coinRipple 0.65s ease-out;
       }
 
       .btn-press { transition: transform 0.1s, opacity 0.1s, box-shadow 0.15s; }
@@ -719,6 +767,25 @@ function createRipple(e) {
 }
 
 // ── Splash Screen — muncul sesaat di load pertama ──────────────
+// ── Loading indicator bertema "koin jatuh ke celengan" ──────────
+// Pengganti dot-bounce generik untuk momen loading yang lebih terasa
+// khas "Buku Kas" — dipakai saat memproses AI, prediksi, atau sinkronisasi.
+function CoinLoader({ size = 8 }) {
+  const { dark } = useTheme();
+  const t = tokens(dark);
+  return (
+    <div style={{ display:"inline-flex", gap:5, alignItems:"flex-end", height:size*2.2 }}>
+      {[0,1,2].map(i => (
+        <div key={i} style={{
+          width:size, height:size, borderRadius:"50%",
+          background:`linear-gradient(135deg, ${ACCENT_GOLD_L}, ${ACCENT_GOLD})`,
+          animation:`coinDrop 1s ${i*0.15}s cubic-bezier(0.45,0,0.55,1) infinite`,
+        }} />
+      ))}
+    </div>
+  );
+}
+
 function SplashScreen() {
   const { dark } = useTheme();
   const t = tokens(dark);
@@ -767,14 +834,13 @@ function Confetti() {
 }
 
 // ── Angka dengan animasi count-up ────────────────────────────
-function AnimatedNumber({ value, format = formatRp }) {
+function AnimatedNumber({ value, format = formatRp, duration = 500 }) {
   const [display, setDisplay] = useState(value);
 
 
   useEffect(() => {
     const start = display;
     const end = value;
-    const duration = 500;
     const startTime = performance.now();
 
     const tick = (now) => {
@@ -786,7 +852,7 @@ function AnimatedNumber({ value, format = formatRp }) {
     };
     requestAnimationFrame(tick);
     // eslint-disable-next-line
-  }, [value]);
+  }, [value, duration]);
 
   return <span>{format(display)}</span>;
 }
@@ -867,9 +933,7 @@ function ScanStrukModal({ onClose, onHasil }) {
 
             {status === "scanning" ? (
               <div style={{ textAlign:"center", padding:"16px 0" }}>
-                <div style={{ display:"inline-flex", gap:4 }}>
-                  {[0,1,2].map(i => <div key={i} style={{ width:8, height:8, borderRadius:"50%", background:t.gold, animation:`bounce 1.2s ${i*0.2}s infinite` }} />)}
-                </div>
+                <CoinLoader />
                 <div style={{ fontSize:13, color:t.textMuted, marginTop:10 }}>AI sedang membaca struk...</div>
               </div>
             ) : (
@@ -1041,9 +1105,7 @@ function VoiceInputModal({ onClose, onHasil }) {
             )}
 
             {status === "processing" ? (
-              <div style={{ display:"inline-flex", gap:4 }}>
-                {[0,1,2].map(i => <div key={i} style={{ width:8, height:8, borderRadius:"50%", background:t.gold, animation:`bounce 1.2s ${i*0.2}s infinite` }} />)}
-              </div>
+              <CoinLoader />
             ) : transcript && status !== "listening" && (
               <div style={{ display:"flex", gap:8 }}>
                 <button className="btn-press" onClick={()=>{ setTranscript(""); setErrMsg(""); }} style={{
@@ -1346,6 +1408,131 @@ function isBiometricTerdaftar() {
 
 
 // ── Hook: Deteksi status online/offline browser ────────────────
+// ── Hook: Pull-to-refresh dengan efek elastis ──────────────────
+// Mendeteksi swipe-down saat window sudah di posisi paling atas (scrollY=0).
+// Layout app ini scroll di level window/body (bukan container terpisah),
+// jadi hook ini attach ke window, bukan ke elemen tertentu.
+// Dipakai khusus mobile (touch) — tidak mengganggu interaksi mouse desktop.
+// ── Hook: Parallax halus mengikuti scroll ───────────────────────
+// Dipakai di kartu saldo header — bergerak sedikit lebih lambat dari
+// konten di bawahnya saat scroll, memberi kesan berlapis (depth).
+// Dibatasi rentang kecil supaya halus, bukan efek parallax dramatis.
+function useScrollParallax(maxOffset = 14) {
+  const [offset, setOffset] = useState(0);
+
+  useEffect(() => {
+    let ticking = false;
+    const handleScroll = () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        const y = window.scrollY;
+        // Parallax cuma terasa di 150px pertama scroll, setelah itu diam
+        // (supaya tidak "mengejar" scroll sampai jauh dan terasa aneh)
+        const clamped = Math.min(y, 150);
+        setOffset((clamped / 150) * maxOffset);
+        ticking = false;
+      });
+    };
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, [maxOffset]);
+
+  return offset;
+}
+
+function usePullToRefresh(onRefresh, enabled = true) {
+  const [pullDistance, setPullDistance] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
+  const startYRef = useRef(0);
+  const pullingRef = useRef(false);
+
+  useEffect(() => {
+    if (!enabled) return;
+
+    const THRESHOLD = 70; // jarak tarik (px) sebelum refresh ter-trigger
+    const MAX_PULL = 110; // batas maksimal tarik — di atas itu efeknya makin "berat" (diminishing)
+
+    const handleTouchStart = (e) => {
+      if (window.scrollY > 4 || refreshing) return;
+      startYRef.current = e.touches[0].clientY;
+      pullingRef.current = true;
+    };
+
+    const handleTouchMove = (e) => {
+      if (!pullingRef.current || refreshing) return;
+      const delta = e.touches[0].clientY - startYRef.current;
+      if (delta <= 0) { setPullDistance(0); return; }
+
+      // Efek elastis: makin ditarik jauh, makin "berat" (diminishing returns),
+      // meniru rubber-band effect khas pull-to-refresh native iOS/Android.
+      const damped = MAX_PULL * (1 - Math.exp(-delta / MAX_PULL));
+      setPullDistance(damped);
+    };
+
+    const handleTouchEnd = async () => {
+      if (!pullingRef.current) return;
+      pullingRef.current = false;
+
+      setPullDistance((current) => {
+        if (current >= THRESHOLD * 0.75) {
+          setRefreshing(true);
+          (async () => {
+            try { await onRefresh(); } finally {
+              setRefreshing(false);
+              setPullDistance(0);
+            }
+          })();
+          return THRESHOLD * 0.75; // tahan di posisi indikator selama refresh berjalan
+        }
+        return 0;
+      });
+    };
+
+    window.addEventListener("touchstart", handleTouchStart, { passive: true });
+    window.addEventListener("touchmove", handleTouchMove, { passive: true });
+    window.addEventListener("touchend", handleTouchEnd);
+
+    return () => {
+      window.removeEventListener("touchstart", handleTouchStart);
+      window.removeEventListener("touchmove", handleTouchMove);
+      window.removeEventListener("touchend", handleTouchEnd);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshing, onRefresh, enabled]);
+
+  return { pullDistance, refreshing };
+}
+
+// ── Indikator visual pull-to-refresh ────────────────────────────
+function PullToRefreshIndicator({ pullDistance, refreshing }) {
+  const { dark } = useTheme();
+  const t = tokens(dark);
+  if (pullDistance <= 2 && !refreshing) return null;
+
+  const rotasi = Math.min(360, (pullDistance / 70) * 360);
+
+  return (
+    <div style={{
+      display: "flex", justifyContent: "center", alignItems: "center",
+      height: Math.max(pullDistance, refreshing ? 52 : 0),
+      overflow: "hidden", transition: refreshing ? "height 0.2s ease" : "none",
+      marginTop: -8,
+    }}>
+      <div style={{
+        width: 30, height: 30, borderRadius: "50%",
+        background: t.surface, boxShadow: t.cardShadow, border: `1.5px solid ${t.gold}`,
+        display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14,
+        transform: refreshing ? "none" : `rotate(${rotasi}deg)`,
+        animation: refreshing ? "spin 0.8s linear infinite" : "none",
+        color: t.gold,
+      }}>
+        {refreshing ? "↻" : "↓"}
+      </div>
+    </div>
+  );
+}
+
 function useOnlineStatus() {
   const [online, setOnline] = useState(navigator.onLine);
   useEffect(() => {
@@ -1621,6 +1808,8 @@ function AuthScreen({ onAuth }) {
         display:"flex", flexDirection:"column", justifyContent:"space-between",
         padding:"56px 56px", position:"relative", overflow:"hidden", minHeight:"100vh",
       }}>
+        {/* Gradient mesh — dua blob warna bergerak sangat lambat, kesan organik */}
+        <div className="gradient-mesh" />
         {/* Garis ledger dekoratif ambient */}
         <div style={{ position:"absolute", inset:0, opacity:0.05, backgroundImage:`repeating-linear-gradient(180deg, transparent, transparent 39px, ${ACCENT_GOLD_L} 40px)` }} />
 
@@ -2759,8 +2948,8 @@ function TabGrafik({ transaksi }) {
                 <YAxis tickFormatter={v=>`${(v/1000000).toFixed(1)}jt`} tick={{ fontSize:10, fill:axisColor, fontFamily:t.fontMono }} axisLine={false} tickLine={false} />
                 <Tooltip content={customTooltip} cursor={{ fill: dark?"rgba(255,255,255,0.03)":"rgba(0,0,0,0.02)" }} />
                 <Legend wrapperStyle={{ fontSize:12, color:t.text, paddingTop:8 }} iconType="circle" iconSize={8} />
-                <Bar dataKey="pemasukan" name="Pemasukan" fill={t.green} radius={[3,3,0,0]} maxBarSize={28} />
-                <Bar dataKey="pengeluaran" name="Pengeluaran" fill={t.red} radius={[3,3,0,0]} maxBarSize={28} />
+                <Bar dataKey="pemasukan" name="Pemasukan" fill={t.green} radius={[3,3,0,0]} maxBarSize={28} animationDuration={900} animationEasing="ease-out" />
+                <Bar dataKey="pengeluaran" name="Pengeluaran" fill={t.red} radius={[3,3,0,0]} maxBarSize={28} animationDuration={900} animationEasing="ease-out" animationBegin={150} />
               </BarChart>
             </ResponsiveContainer>
         }
@@ -2782,7 +2971,7 @@ function TabGrafik({ transaksi }) {
                 <XAxis dataKey="bulan" tick={{ fontSize:11, fill:axisColor, fontFamily:t.fontBody }} axisLine={{ stroke:gridColor }} tickLine={false} />
                 <YAxis tickFormatter={v=>`${(v/1000000).toFixed(1)}jt`} tick={{ fontSize:10, fill:axisColor, fontFamily:t.fontMono }} axisLine={false} tickLine={false} />
                 <Tooltip content={customTooltip} />
-                <Area type="monotone" dataKey="pengeluaran" name="Pengeluaran" stroke={t.gold} fill="url(#gradPengeluaran)" strokeWidth={2.2} />
+                <Area type="monotone" dataKey="pengeluaran" name="Pengeluaran" stroke={t.gold} fill="url(#gradPengeluaran)" strokeWidth={2.2} animationDuration={1100} animationEasing="ease-in-out" />
               </AreaChart>
             </ResponsiveContainer>
         }
@@ -2797,7 +2986,7 @@ function TabGrafik({ transaksi }) {
                 <XAxis type="number" tickFormatter={v=>`${(v/1000).toFixed(0)}rb`} tick={{ fontSize:10, fill:axisColor, fontFamily:t.fontMono }} axisLine={false} tickLine={false} />
                 <YAxis type="category" dataKey="name" tick={{ fontSize:11.5, fill:t.text, fontFamily:t.fontBody }} width={90} axisLine={false} tickLine={false} />
                 <Tooltip content={customTooltip} cursor={{ fill: dark?"rgba(255,255,255,0.03)":"rgba(0,0,0,0.02)" }} />
-                <Bar dataKey="nilai" name="Jumlah" fill={t.red} radius={[0,3,3,0]} maxBarSize={18} />
+                <Bar dataKey="nilai" name="Jumlah" fill={t.red} radius={[0,3,3,0]} maxBarSize={18} animationDuration={800} animationEasing="ease-out" />
               </BarChart>
             </ResponsiveContainer>
         }
@@ -3332,7 +3521,9 @@ Berikan 2-3 kalimat insight singkat dalam Bahasa Indonesia yang personal dan act
             />
           </svg>
           <div style={{ position:"absolute", inset:0, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center" }}>
-            <div className="num-tabular" style={{ fontFamily:t.fontMono, fontSize:34, fontWeight:800, color:t.text, lineHeight:1 }}>{hasil.total}</div>
+            <div className="num-tabular" style={{ fontFamily:t.fontMono, fontSize:34, fontWeight:800, color:t.text, lineHeight:1 }}>
+              <AnimatedNumber value={hasil.total} format={v => Math.round(v)} duration={1000} />
+            </div>
             <div style={{ fontSize:10.5, color:t.textMuted, marginTop:2 }}>dari 100</div>
           </div>
         </div>
@@ -3348,7 +3539,9 @@ Berikan 2-3 kalimat insight singkat dalam Bahasa Indonesia yang personal dan act
           <div key={i} style={{ marginBottom: i < hasil.komponen.length-1 ? 16 : 0 }}>
             <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
               <span style={{ fontSize:13, fontWeight:600, color:t.text }}>{k.nama}</span>
-              <span className="num-tabular" style={{ fontSize:12.5, fontFamily:t.fontMono, color:t.textMuted }}>{k.skor}/{k.maks}</span>
+              <span className="num-tabular" style={{ fontSize:12.5, fontFamily:t.fontMono, color:t.textMuted }}>
+                <AnimatedNumber value={k.skor} format={v => Math.round(v)} duration={700} />/{k.maks}
+              </span>
             </div>
             <div style={{ height:6, background:t.surface2, borderRadius:99, overflow:"hidden", marginBottom:5 }}>
               <div style={{
@@ -3475,12 +3668,14 @@ function TabPrediksi({ transaksi }) {
           {/* Akurasi */}
           <div style={{ display:"flex", gap:10, marginBottom:16 }}>
             {[
-              { label:"Tren Linear", val:`${result.akurasi_linear}%` },
-              { label:"Exp. Smoothing", val:`${result.akurasi_es}%` },
-              { label:"Gabungan", val:`${result.akurasi_gabungan}%` },
+              { label:"Tren Linear", val:result.akurasi_linear },
+              { label:"Exp. Smoothing", val:result.akurasi_es },
+              { label:"Gabungan", val:result.akurasi_gabungan },
             ].map((item, i) => (
               <div key={i} style={{ flex:1, background:t.surface, borderRadius:12, padding:"14px 12px", boxShadow:t.cardShadow, border:`1px solid ${t.borderSoft}`, textAlign:"center" }}>
-                <div className="num-tabular" style={{ fontFamily:t.fontMono, fontSize:21, fontWeight:800, color:t.gold }}>{item.val}</div>
+                <div className="num-tabular" style={{ fontFamily:t.fontMono, fontSize:21, fontWeight:800, color:t.gold }}>
+                  <AnimatedNumber value={item.val} format={v => `${Math.round(v)}%`} duration={800} />
+                </div>
                 <div style={{ fontSize:10.5, color:t.textMuted, marginTop:3 }}>{item.label}</div>
               </div>
             ))}
@@ -3496,10 +3691,10 @@ function TabPrediksi({ transaksi }) {
                 <YAxis tickFormatter={v=>`${(v/1000000).toFixed(1)}jt`} tick={{ fontSize:10, fill:axisColor, fontFamily:t.fontMono }} axisLine={false} tickLine={false} />
                 <Tooltip content={customTooltip} />
                 <Legend wrapperStyle={{ fontSize:12, color:t.text, paddingTop:8 }} iconType="circle" iconSize={8} />
-                <Line type="monotone" dataKey="Tren" stroke={dark?"#6E6B62":"#A19E93"} strokeWidth={1.75} dot={{ r:3.5 }} />
-                <Line type="monotone" dataKey="Rata-rata" stroke={t.green} strokeWidth={1.75} dot={{ r:3.5 }} />
-                <Line type="monotone" dataKey="Exp. Smoothing" stroke="#3D6E96" strokeWidth={1.75} dot={{ r:3.5 }} />
-                <Line type="monotone" dataKey="Gabungan" stroke={t.gold} strokeWidth={3} dot={{ r:5 }} />
+                <Line type="monotone" dataKey="Tren" stroke={dark?"#6E6B62":"#A19E93"} strokeWidth={1.75} dot={{ r:3.5 }} animationDuration={900} animationEasing="ease-out" />
+                <Line type="monotone" dataKey="Rata-rata" stroke={t.green} strokeWidth={1.75} dot={{ r:3.5 }} animationDuration={900} animationEasing="ease-out" animationBegin={150} />
+                <Line type="monotone" dataKey="Exp. Smoothing" stroke="#3D6E96" strokeWidth={1.75} dot={{ r:3.5 }} animationDuration={900} animationEasing="ease-out" animationBegin={300} />
+                <Line type="monotone" dataKey="Gabungan" stroke={t.gold} strokeWidth={3} dot={{ r:5 }} animationDuration={1100} animationEasing="ease-out" animationBegin={500} />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -3669,11 +3864,8 @@ ${kontekKeuangan}`;
           ))
         )}
         {loading && (
-          <div style={{ display:"flex", gap:4, padding:"12px 14px" }}>
-            {[0,1,2].map(i => (
-              <div key={i} style={{ width:7, height:7, borderRadius:"50%", background:t.gold,
-                animation:`bounce 1.2s ${i*0.2}s infinite` }} />
-            ))}
+          <div style={{ padding:"12px 14px" }}>
+            <CoinLoader size={7} />
           </div>
         )}
       </div>
@@ -3878,6 +4070,35 @@ export default function App() {
   const reloadRecurring = () => {
     sb.fetchRecurring(token).then(d => setRecurring(Array.isArray(d) ? d : []));
   };
+
+  // Refresh menyeluruh — dipakai oleh pull-to-refresh, memuat ulang semua
+  // data utama sekaligus (transaksi, dompet, recurring) plus cek jadwal
+  // recurring yang mungkin baru jatuh tempo.
+  const refreshSemuaData = async () => {
+    try {
+      const [tx, dm, rc] = await Promise.all([
+        sb.fetchTransaksi(token), sb.fetchDompet(token), sb.fetchRecurring(token),
+      ]);
+      const recurringList = Array.isArray(rc) ? rc : [];
+      setDompet(Array.isArray(dm) ? dm : []);
+      setRecurring(recurringList);
+
+      const { dibuat } = await prosesRecurringJatuhTempo(recurringList, token);
+      let transaksiFinal = Array.isArray(tx) ? tx : [];
+      if (dibuat > 0) {
+        const ulang = await sb.fetchTransaksi(token);
+        transaksiFinal = Array.isArray(ulang) ? ulang : transaksiFinal;
+      }
+      const pending = offlineQueue.get().filter(q => !q.editId).map(q => ({ ...q, id: `local_${q.localId}`, _pending: true }));
+      setTx([...pending, ...transaksiFinal]);
+      showToast(dibuat > 0 ? `✓ Diperbarui · ${dibuat} transaksi berulang tercatat` : "✓ Data diperbarui");
+    } catch {
+      showToast("Gagal memperbarui data", "error");
+    }
+  };
+
+  const { pullDistance, refreshing: ptrRefreshing } = usePullToRefresh(refreshSemuaData, !!token);
+  const parallaxOffset = useScrollParallax(14);
 
   const handleAuth   = (t,e) => { setToken(t); setEmail(e); };
   const handleLogout = async () => {
@@ -4209,6 +4430,8 @@ export default function App() {
               ? `linear-gradient(135deg, ${th.bgPaper} 0%, #1c1c28 100%)`
               : `linear-gradient(135deg, ${th.bgPaper} 0%, #FFFFFF 100%)`,
             borderBottom:`1px solid ${th.border}`, padding:"22px 32px",
+            transform: `translateY(${-parallaxOffset}px)`,
+            transition: "transform 0.05s linear",
           }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-end", flexWrap:"wrap", gap:16 }}>
               <div style={{ display:"flex", gap:36, flexWrap:"wrap" }}>
@@ -4246,6 +4469,7 @@ export default function App() {
           {/* Content body */}
           <div style={{ padding:"28px 32px 100px", maxWidth:920 }}>
 
+            <PullToRefreshIndicator pullDistance={pullDistance} refreshing={ptrRefreshing} />
             <OfflineBanner online={online} pendingCount={pendingSync} syncing={syncing} />
 
             {/* Form */}
